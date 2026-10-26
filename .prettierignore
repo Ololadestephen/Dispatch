@@ -1,0 +1,14 @@
+node_modules
+.next
+dist
+data
+.local
+.desloppify
+.claude
+tests/.tmp
+test-results
+playwright-report
+package-lock.json
+*.md
+vendor
+next-env.d.ts

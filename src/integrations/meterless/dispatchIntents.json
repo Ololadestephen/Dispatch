@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "intents": [
+    {
+      "id": "GENERAL",
+      "category": "general",
+      "description": "Safe fallback when no registered intent clears the Reject band. Never routes to tools.",
+      "parameters": { "type": "object", "properties": {} },
+      "capabilities": [],
+      "riskClass": "low",
+      "surfaces": ["desk"],
+      "roles": ["*"],
+      "examples": ["hello", "what can you do"],
+      "version": 1
+    },
+    {
+      "id": "order.investigate",
+      "category": "order",
+      "description": "Investigate whether a confirmed order can still be delivered on time, using read-only lookups of the order, stock, inbound shipments, supplier messages, backup listings and spend policy.",
+      "parameters": { "type": "object", "properties": {} },
+      "capabilities": [
+        "orders.read",
+        "inventory.read",
+        "inbound.read",
+        "supplier_messages.read",
+        "backup_listings.read",
+        "policy.read"
+      ],
+      "riskClass": "low",
+      "surfaces": ["desk"],
+      "roles": ["manager", "operator"],
+      "examples": [
+        "Investigate order DSP-1042",
+        "Investigate order DSP-1042 for delivery risk",
+        "Check whether this order can still be delivered on time",
+        "Is the wedding chair order at risk"
+      ],
+      "version": 1
+    }
+  ]
+}

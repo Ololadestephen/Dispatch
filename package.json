@@ -1,0 +1,47 @@
+{
+  "name": "dispatch",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "test:live": "LIVE_MODEL_TESTS=1 vitest run",
+    "dev:mock": "DISPATCH_EXTRACTION=mock DISPATCH_SOURCES=local DISPATCH_DATA_DIR=.local/mock-data DISPATCH_EVIDENCE_DIR=.local/mock-data/evidence next dev -p 3001",
+    "test:e2e": "next build && playwright test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "tsc --noEmit && prettier --check .",
+    "eval:scout": "SCOUT_IMPL=$PWD/src/integrations/meterless/scout/index.ts node --import tsx vendor/meterless/scout-intent/evals/runner/index.ts all",
+    "zetaris:setup": "tsx scripts/zetaris-setup.ts",
+    "test:zetaris": "ZETARIS_TESTS=1 vitest run"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "framer-motion": "^13.5.1",
+    "lucide-react": "^0.546.0",
+    "next": "^16.4.2",
+    "pg": "^8.16.3",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@types/node": "^26.6.5",
+    "@types/pg": "^8.15.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.6",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.12",
+    "yaml": "^2.8.1"
+  }
+}

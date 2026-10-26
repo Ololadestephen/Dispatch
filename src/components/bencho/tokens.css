@@ -1,0 +1,14 @@
+/* Bencho block tokens (MIT, Lorenzo Cabra), modified for Dispatch:
+   only the names the three vendored blocks read, mapped to DESIGN.md's palette. */
+:root {
+  --font-ui: var(--sans);
+  --ink: #172d2a;
+  --ink-rgb: 23, 45, 42;
+  --ink-2: #536560;
+  --card: #f5f3ee;
+  --fill-slab: #ffffff;
+  --fill-on: #176b58;
+  --fill-on-rgb: 23, 107, 88;
+  --pane-edge: rgba(23, 45, 42, 0.12);
+  --signal: #176b58;
+}
