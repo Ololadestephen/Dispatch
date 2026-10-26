@@ -30,7 +30,7 @@ const DONE_TOAST: Partial<Record<DeskAction, { title: string; body: string }>> =
   approve: { title: 'Plan approved', body: 'Tasks and an unsent supplier draft were created.' },
   confirm: { title: 'Confirmation recorded', body: 'Stored as a simulated supplier confirmation.' },
   revise: { title: 'Source revision saved', body: 'The plan was re-checked against it.' },
-  reset: { title: 'Demo reset', body: 'Sources and history are back to the baseline.' }
+  reset: { title: 'Sample data reset', body: 'Sources and history are back to the starting point.' }
 };
 
 /**

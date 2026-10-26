@@ -19,6 +19,21 @@ export interface ZetarisConfig {
 }
 
 const LoginResponse = z.object({ idToken: z.string().min(1), orgId: z.number().int() });
+const TokenExpiry = z.object({ exp: z.number().finite().positive() });
+
+/** Expiry only bounds caching; Zetaris still validates the token on every query. */
+function sessionCacheDeadline(token: string): number {
+  const now = Date.now();
+  try {
+    const claims = TokenExpiry.safeParse(
+      JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8'))
+    );
+    if (claims.success) return Math.min(now + 300_000, claims.data.exp * 1000 - 30_000);
+  } catch {
+    // Opaque tokens have no readable expiry, so keep their cache short.
+  }
+  return now + 60_000;
+}
 const QueryResponse = z.object({
   headers: z.array(z.string()),
   data: z.array(z.array(z.string().nullable())),
@@ -49,7 +64,7 @@ export function sqlString(value: string): string {
 }
 
 export class ZetarisClient {
-  private session: { token: string; orgId: number } | undefined;
+  private session: { token: string; orgId: number; cacheDeadline: number } | undefined;
 
   constructor(private readonly config: ZetarisConfig) {}
 
@@ -90,7 +105,8 @@ export class ZetarisClient {
   }
 
   private async login(signal?: AbortSignal): Promise<{ token: string; orgId: number }> {
-    if (this.session) return this.session;
+    if (this.session && Date.now() < this.session.cacheDeadline) return this.session;
+    this.session = undefined;
     const res = await this.post(
       '/api/auth/login',
       {
@@ -105,7 +121,11 @@ export class ZetarisClient {
     if (!res.ok || !parsed.success) {
       throw new DomainError(`Zetaris sign-in failed (HTTP ${res.status}).`, 'SOURCE_UNAVAILABLE');
     }
-    this.session = { token: parsed.data.idToken, orgId: parsed.data.orgId };
+    this.session = {
+      token: parsed.data.idToken,
+      orgId: parsed.data.orgId,
+      cacheDeadline: sessionCacheDeadline(parsed.data.idToken)
+    };
     return this.session;
   }
 

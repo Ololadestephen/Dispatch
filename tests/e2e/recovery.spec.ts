@@ -10,10 +10,26 @@ async function asRole(page: Page, role: 'Manager' | 'Operator') {
   await expect(button).toHaveAttribute('aria-pressed', 'true');
 }
 
+const ORDER = '/app/orders/DSP-1042';
+
+/** Opens a page of the app; order pages share the header with the order's next action. */
+async function open(
+  page: Page,
+  where: '' | 'investigation' | 'decision' | 'recovery' | 'sources' | 'activity'
+) {
+  const url =
+    where === 'sources' || where === 'activity'
+      ? `/app/${where}`
+      : where
+        ? `${ORDER}/${where}`
+        : ORDER;
+  await page.goto(url);
+}
+
 async function freshDemo(page: Page) {
-  await page.goto('/');
+  await open(page, '');
   await asRole(page, 'Manager');
-  await page.getByRole('button', { name: 'Reset demo' }).click();
+  await page.getByRole('button', { name: 'Reset sample data' }).click();
   await expect(page.getByRole('button', { name: 'Investigate', exact: true })).toBeVisible();
 }
 
@@ -52,14 +68,16 @@ test('happy path: investigate, approve, confirm with simulated evidence, survive
   page
 }) => {
   await freshDemo(page);
-  await expect(page.getByText('Not investigated', { exact: false })).toBeVisible();
+  await expect(page.getByText('Not investigated yet.', { exact: true })).toBeVisible();
   await expect(page.getByText('No contract yet')).toBeVisible();
 
   await page.getByRole('button', { name: 'Investigate', exact: true }).click();
   await expect(page.getByRole('heading', { name: /60 chairs short for Saturday/ })).toBeVisible();
   await expect(page.getByText('Mock output')).toBeVisible();
   await expect(page.getByText('Contract signed')).toBeVisible();
+  await open(page, 'decision');
   await expect(page.getByText('Listing — not confirmed')).toBeVisible();
+  await open(page, 'investigation');
   await page.getByRole('button', { name: 'Step 6', exact: true }).click();
   await expect(page.getByText(/Model requested: Check a backup/)).toBeVisible();
   await expect(
@@ -72,6 +90,8 @@ test('happy path: investigate, approve, confirm with simulated evidence, survive
 
   await slideWithPointer(page, /Slide to approve ₦90,000/);
   await expect(page.getByText(/Approved — not yet confirmed/).first()).toBeVisible();
+  await page.getByRole('button', { name: 'Record supplier confirmation' }).click();
+  await expect(page).toHaveURL(new RegExp(`${ORDER}/recovery$`));
   await expect(page.getByText('Draft — not sent', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Use simulated reply' }).click();
@@ -143,6 +163,7 @@ test('supplier evidence shows only spans from its cited revision and closes with
   await freshDemo(page);
   await page.getByRole('button', { name: 'Investigate', exact: true }).click();
   await expect(page.getByRole('heading', { name: /60 chairs short for Saturday/ })).toBeVisible();
+  await open(page, 'sources');
   await page.getByRole('button', { name: /^Supplier message/ }).click();
   const drawer = page.getByRole('dialog', { name: /Supplier message evidence/ });
   await expect(drawer).toBeVisible();
@@ -155,7 +176,10 @@ test('supplier evidence shows only spans from its cited revision and closes with
     .getByRole('textbox', { name: 'Supplier message', exact: true })
     .fill('Updated supplier message: the original quote has changed.');
   await page.getByRole('button', { name: 'Save message revision' }).click();
+  await expect(page.getByText('Source revision saved', { exact: true })).toBeVisible();
+  await open(page, '');
   await expect(page.getByText(/Source changed — review required/).first()).toBeVisible();
+  await open(page, 'sources');
   await page.getByRole('button', { name: /^Supplier message/ }).click();
   await expect(drawer).toBeVisible();
   await expect(drawer.locator('.source-text')).toHaveText(
@@ -221,9 +245,10 @@ test('an approval retry reuses its key and survives a failed state refresh after
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(page.getByText('State refresh unavailable', { exact: true })).toHaveCount(0);
   await expect(page.getByText(/Approved — not yet confirmed/).first()).toBeVisible();
-  await page.reload();
+  await open(page, 'recovery');
   await expect(page.getByText(/Approved — not yet confirmed/).first()).toBeVisible();
   await expect(page.locator('#recovery').getByRole('listitem')).toHaveCount(2);
+  await open(page, 'activity');
   await expect(page.getByText('Approved plan v1.', { exact: false })).toHaveCount(1);
 });
 
@@ -266,15 +291,18 @@ test('reapproval and reload keep the new 50-chair plan and preserve history', as
   await slide(page, /Slide to approve ₦90,000/);
   await expect(page.getByText(/Approved — not yet confirmed/).first()).toBeVisible();
 
+  await open(page, 'sources');
   await page.getByText('Write a new source revision', { exact: true }).click();
   await page.getByLabel('Damaged chairs').fill('10');
   await page.getByRole('button', { name: 'Save stock revision' }).click();
+  await expect(page.getByText('Source revision saved', { exact: true })).toBeVisible();
+  await open(page, '');
   await expect(page.getByText(/Source changed — review required/).first()).toBeVisible();
   await page.getByRole('button', { name: 'Investigate again', exact: true }).click();
   await expect(page.getByRole('heading', { name: /50 chairs short for Saturday/ })).toBeVisible();
   await slide(page, /Slide to approve ₦90,000/);
-  await expect(page.getByRole('heading', { name: 'Recovery · plan v4' })).toBeVisible();
-  await page.reload();
+  await expect(page.getByText(/Approved — not yet confirmed/).first()).toBeVisible();
+  await open(page, 'recovery');
 
   const recovery = page.locator('#recovery');
   await expect(recovery.getByRole('heading', { name: 'Recovery · plan v4' })).toBeVisible();
@@ -282,18 +310,23 @@ test('reapproval and reload keep the new 50-chair plan and preserve history', as
   const tasks = recovery.getByRole('list', { name: 'Tasks' });
   await expect(tasks.getByRole('listitem')).toHaveCount(2);
   await expect(tasks).toContainText('Reserve 70 usable units');
+  await open(page, 'activity');
   await expect(page.getByText('Approved plan v1.', { exact: false })).toBeVisible();
   await expect(page.getByText('Approved plan v4.', { exact: false })).toBeVisible();
 
+  await open(page, 'recovery');
   await recovery.getByRole('button', { name: 'Use simulated reply' }).click();
   await slide(page, /Slide to record confirmation/);
   await expect(page.getByText(/Recovery confirmed \(simulated\)/i)).toBeVisible();
   await page.reload();
   await expect(recovery).toContainText('Simulated reply from Lekki Party Supplies Ltd: 50');
 
+  await open(page, 'sources');
   await page.getByText('Write a new source revision', { exact: true }).click();
   await page.getByLabel('Damaged chairs').fill('15');
   await page.getByRole('button', { name: 'Save stock revision' }).click();
+  await expect(page.getByText('Source revision saved', { exact: true })).toBeVisible();
+  await open(page, 'recovery');
   await expect(page.getByText(/Source changed — review required/).first()).toBeVisible();
   await expect(recovery).toHaveCount(0);
   await page.reload();

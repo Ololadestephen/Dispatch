@@ -65,8 +65,10 @@ export function SourcesTile({
   state,
   busy,
   onOpen,
-  onRevise
+  onRevise,
+  className = 'span-12'
 }: {
+  className?: string;
   state: DeskState;
   busy: boolean;
   onOpen: (envelope: AnySourceEnvelope) => void;
@@ -83,7 +85,7 @@ export function SourcesTile({
   return (
     <Tile
       title="Sources"
-      className="span-7"
+      className={className}
       aside={
         s.providerMode === 'zetaris' ? (
           <Pill tone="ok">Read through Zetaris</Pill>
@@ -118,10 +120,16 @@ export function SourcesTile({
   );
 }
 
-export function HistoryTile({ state }: { state: DeskState }) {
+export function HistoryTile({
+  state,
+  className = 'span-12'
+}: {
+  state: DeskState;
+  className?: string;
+}) {
   if (state.auditEvents.length === 0) return null;
   return (
-    <Tile title="History" className="span-5">
+    <Tile title="History" className={className}>
       <ol className="audit">
         {state.auditEvents.map((e) => (
           <li key={e.eventId}>

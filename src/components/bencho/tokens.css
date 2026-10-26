@@ -2,8 +2,8 @@
    only the names the three vendored blocks read, mapped to DESIGN.md's palette. */
 :root {
   --font-ui: var(--sans);
-  --ink: #172d2a;
-  --ink-rgb: 23, 45, 42;
+  --ink: #0e0e0e;
+  --ink-rgb: 14, 14, 14;
   --ink-2: #536560;
   --card: #f5f3ee;
   --fill-slab: #ffffff;

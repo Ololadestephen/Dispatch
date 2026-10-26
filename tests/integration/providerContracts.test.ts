@@ -107,6 +107,39 @@ describe('Provider HTTP contracts (mocked transport, no provider calls)', () => 
     });
   });
 
+  it.each(['jwt', 'opaque'] as const)(
+    'refreshes a cached %s Zetaris token before sending a query after expiry',
+    async (kind) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-10-26T20:00:00Z'));
+      const expiry = Math.floor(Date.now() / 1000) + 90;
+      const token =
+        kind === 'jwt'
+          ? `header.${Buffer.from(JSON.stringify({ exp: expiry })).toString('base64url')}.signature`
+          : 'opaque-token';
+      const fetch = vi
+        .fn()
+        .mockImplementation(async (url: string) =>
+          url.endsWith('/api/auth/login')
+            ? reply({ idToken: token, orgId: 7 })
+            : reply({ headers: ['value'], data: [['1']] })
+        );
+      vi.stubGlobal('fetch', fetch);
+      const client = new ZetarisClient({
+        baseUrl: 'http://zetaris.invalid',
+        username: 'test-user',
+        password: 'test-password'
+      });
+      await client.query('SELECT 1');
+      await client.query('SELECT 1');
+      expect(fetch.mock.calls.filter(([url]) => url.endsWith('/api/auth/login'))).toHaveLength(1);
+      vi.setSystemTime(Date.now() + 60_001);
+      await client.query('SELECT 1');
+      expect(fetch.mock.calls.filter(([url]) => url.endsWith('/api/auth/login'))).toHaveLength(2);
+      expect(fetch).toHaveBeenCalledTimes(5);
+    }
+  );
+
   it('handles a non-string Zetaris error message without throwing a TypeError', async () => {
     vi.stubGlobal(
       'fetch',
