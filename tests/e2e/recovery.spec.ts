@@ -75,7 +75,7 @@ test('happy path: investigate, approve, confirm with simulated evidence, survive
 
   await page.getByRole('button', { name: 'Investigate', exact: true }).click();
   await expect(page.getByRole('heading', { name: /60 chairs short for Saturday/ })).toBeVisible();
-  await expect(page.getByText('Mock output')).toBeVisible();
+  await expect(page.locator('.app-top').getByText('Simulated', { exact: true })).toBeVisible();
   await expect(page.getByText('Contract signed')).toBeVisible();
   await open(page, 'decision');
   await expect(page.getByText('Listing — not confirmed')).toBeVisible();
@@ -99,7 +99,7 @@ test('happy path: investigate, approve, confirm with simulated evidence, survive
   await page.getByRole('button', { name: 'Use simulated reply' }).click();
   await slideWithPointer(page, /Slide to record confirmation/);
   await expect(page.getByText(/Recovery confirmed \(simulated\)/i)).toBeVisible();
-  await expect(page.getByText('Simulated', { exact: true })).toBeVisible();
+  await expect(page.locator('#recovery').getByText('Simulated', { exact: true })).toBeVisible();
 
   await page.reload();
   await expect(page.getByText(/Recovery confirmed \(simulated\)/i)).toBeVisible();

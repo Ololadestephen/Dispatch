@@ -6,10 +6,10 @@ export function ExtractionStatus({ state }: { state: DeskState }) {
   const receipt = state.receipt;
   if (receipt?.executionMode === 'live')
     return <Pill tone="ok">Live · {((receipt.modelRun?.latencyMs ?? 0) / 1000).toFixed(1)} s</Pill>;
-  if (receipt?.executionMode === 'mock') return <Pill tone="pending">Mock output</Pill>;
+  if (receipt?.executionMode === 'mock') return <Pill tone="pending">Simulated</Pill>;
   if (receipt?.executionMode === 'incomplete') return <Pill tone="risk">No model output</Pill>;
   return state.integrations.extraction.mode === 'mock' ? (
-    <Pill tone="pending">Mock mode</Pill>
+    <Pill tone="pending">Simulated</Pill>
   ) : (
     <Pill>NVIDIA not run</Pill>
   );
