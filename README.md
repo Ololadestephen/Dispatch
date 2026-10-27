@@ -56,9 +56,11 @@ If the model call fails, the receipt is saved as **Investigation incomplete**: n
 | **Meterless Scout Intent** | Meterless publishes Scout Intent as a specification with an eval harness, not as a package. Dispatch implements the Stage-1 rules in `src/integrations/meterless/scout/`, without a model call. The upstream spec and harness are vendored in `vendor/meterless/scout-intent/` (Apache-2.0, commit `1742dec`). `npm run eval:scout` runs Meterless's harness against our implementation. All gates pass on its 32-example smoke corpus; that does not establish general safety or full specification conformance. |
 | What Scout does here | (1) Turns "Investigate order DSP-1042" into a signed execution contract (HMAC-SHA256, 5-minute expiry) whose tool plan lists six read-only lookups. Each lookup re-verifies the contract and refuses on a forged, expired or out-of-scope plan. (2) Screens the supplier message as untrusted content and flags sentences that ask the system to change state, independently of the model. |
 | **Meterless World Model** | The reference implementation is vendored unmodified in `vendor/meterless/world-model/` (Apache-2.0, commit `1742dec`). Dispatch mirrors records it has already read into an event-sourced local JSON store with source-revision provenance, answers the order-context query, and queues review-band supplier names for a manager. It never fetches sources or locks stock. Dispatch uses the receipt’s resolved identities for deterministic supplier-name checks; the engine grants no approval or stock authority. Its own conformance runner passes 8/8 checks and its reference smoke tests pass; that does not establish conformance of Dispatch's adapter. |
-| Model | Direct HTTPS calls to NVIDIA NIM (`meta/llama-3.2-11b-vision-instruct`). It does not go through Meterless. Latency varies; the 60-second timeout covers the request and response body. An outage or invalid output produces an "Investigation incomplete" receipt. |
+| Model | Direct HTTPS calls to NVIDIA NIM (`nvidia/nemotron-3.5-lightning-30b-a3b`, with reasoning disabled). It does not go through Meterless. Latency varies; the 60-second timeout covers the request and response body. An outage or invalid output produces an "Investigation incomplete" receipt. |
 | **Zetaris** | Every source read is a Zetaris SQL query against a local install of the Zetaris hackathon platform (Docker). Orders and inbound shipments live in PostgreSQL, registered with `CREATE DATASOURCE` and `REGISTER DATASOURCE TABLES`. Warehouse stock (CSV), supplier messages and backup listings (JSON array documents) are Lightning file tables under the platform's local file root. Dispatch writes seed data and new source revisions to PostgreSQL and the files directly, and reads only through Zetaris. With `DISPATCH_SOURCES=local` (mock mode and offline tests) Dispatch reads local files itself, and the UI and receipts say `local_files`. |
 | App database | SQLite through `node:sqlite`, with ordered migrations in `db/migrations`. Receipt versions and audit events are append-only. |
+
+The model returns a strict JSON-schema response, selecting source passage IDs so Dispatch can copy exact evidence. Existing validators independently check quantities, dates and quoted spans. The model explicitly requests at most one backup evaluation; Scout scopes the read, and deterministic code decides stock, timing and eligibility. No hidden lookup or fixture fallback is used.
 
 Investigations use one extraction call, at most one model-selected backup read and 1,024 output tokens. A 120-second workflow deadline covers the source/model stages and prevents late receipt commits. Live attempts reserve 16,384 token units before contacting NVIDIA; valid reported usage releases unused allowance, while unknown or unfinished usage retains the full charge. A SQLite ledger preserves attempts and outcomes through restarts and demo reset. Its tracking start is explicit; it does not reconstruct calls made before accounting was introduced. Defaults are 100 attempts and 1,000,000 charged token units per application database. These are conservative application limits, not a provider billing estimate.
 
@@ -76,6 +78,8 @@ For live extraction, create `.env.local`:
 
 ```bash
 NVIDIA_API_KEY=nvapi-...
+# Optional override; another model needs its own compatibility verification.
+NVIDIA_MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
 ```
 
 Without a key, investigations end as "Investigation incomplete". They do not fall back to sample data.
@@ -156,10 +160,9 @@ Runs the type check and the Prettier check.
 
 ## Interface
 
-The landing page opens an orders workspace. Each order has Overview, Investigation, Decision and Recovery tabs; Sources filters by order and contains supplier-match review, while Activity links events across the workspace. The mobile order list keeps status and shortage visible in stacked rows. Visual direction (two-tone serif display, warm canvas) was inspired by Aira (aira.app), found on Landdding. Three interactive components are adapted from [Bencho](https://bencho.dev) free blocks (MIT, © 2026 Lorenzo Cabra; see `src/components/bencho/NOTICE.md`):
+The landing page opens an orders workspace. Each order has Overview, Investigation, Decision and Recovery tabs; Sources filters by order and contains supplier-match review, while Activity links events across the workspace. The mobile order list keeps status and shortage visible in stacked rows. Order summaries focus on supplier evidence and the recovery option; lookup history is selectable, while technical identifiers remain in expandable details. Visual direction (two-tone serif display, warm canvas) was inspired by Aira (aira.app), found on Landdding. Two interactive components are adapted from [Bencho](https://bencho.dev) free blocks (MIT, © 2026 Lorenzo Cabra; see `src/components/bencho/NOTICE.md`):
 
 - **Slide to confirm**: approves the plan and records the confirmation. It also works from the keyboard (Enter). A plain click never commits.
-- **Step player**: replays the lookups that ran under the Scout contract.
 - **Toast stack**: shows the real result of each action.
 
 ## Layout

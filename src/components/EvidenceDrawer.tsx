@@ -82,38 +82,42 @@ export function EvidenceDrawer({
             Close
           </button>
         </header>
-        <dl className="fields">
-          <div>
-            <dt>Record</dt>
-            <dd>
-              <Mono>{envelope.recordId}</Mono>
-            </dd>
-          </div>
-          <div>
-            <dt>Revision</dt>
-            <dd>
-              <Mono>{envelope.revisionId}</Mono>
-            </dd>
-          </div>
-          <div>
-            <dt>Stored in</dt>
-            <dd>{BACKING_SYSTEM_LABELS[envelope.backingSystem] ?? envelope.backingSystem}</dd>
-          </div>
-          <div>
-            <dt>SHA-256</dt>
-            <dd>
-              <Mono>{envelope.snapshotHash}</Mono>
-            </dd>
-          </div>
-          <div>
-            <dt>Read at</dt>
-            <dd>{formatWat(envelope.timestampIso)}</dd>
-          </div>
-        </dl>
         {rawText !== null && (
           <blockquote className="source-text">{renderHighlighted(rawText, spans)}</blockquote>
         )}
-        <RecordFields data={data} />
+        {rawText === null && <RecordFields data={data} />}
+        <details className="record-details">
+          <summary>Source details</summary>
+          <dl className="fields">
+            <div>
+              <dt>Record</dt>
+              <dd>
+                <Mono>{envelope.recordId}</Mono>
+              </dd>
+            </div>
+            <div>
+              <dt>Revision</dt>
+              <dd>
+                <Mono>{envelope.revisionId}</Mono>
+              </dd>
+            </div>
+            <div>
+              <dt>Stored in</dt>
+              <dd>{BACKING_SYSTEM_LABELS[envelope.backingSystem] ?? envelope.backingSystem}</dd>
+            </div>
+            <div>
+              <dt>SHA-256</dt>
+              <dd>
+                <Mono>{envelope.snapshotHash}</Mono>
+              </dd>
+            </div>
+            <div>
+              <dt>Read at</dt>
+              <dd>{formatWat(envelope.timestampIso)}</dd>
+            </div>
+          </dl>
+          {rawText !== null && <RecordFields data={data} />}
+        </details>
       </aside>
     </div>
   );

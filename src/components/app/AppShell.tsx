@@ -6,6 +6,7 @@ import type { ReactNode } from 'react';
 import { useDeskContext } from '../../client/DeskProvider';
 import { formatWat } from '../../client/format';
 import { Pill } from '../primitives';
+import { ExtractionStatus } from '../IntegrationStrip';
 
 const NAV = [
   {
@@ -31,12 +32,7 @@ function Crumbs({ pathname }: { pathname: string }) {
       </nav>
     );
   }
-  const current = NAV.find((n) => n.match(pathname));
-  return (
-    <nav className="crumbs" aria-label="Breadcrumb">
-      <b>{current?.label ?? 'Orders'}</b>
-    </nav>
-  );
+  return null;
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -68,7 +64,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </nav>
         <div className="side-foot">
           <Pill tone="pending" dot>
-            Sample workspace
+            Demo scenario
           </Pill>
         </div>
       </aside>
@@ -79,7 +75,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Crumbs pathname={pathname} />
             {state && (
               <div className="app-top-end">
-                <span className="clock">As of {formatWat(state.scenarioClockIso)}</span>
+                <span className="clock">{formatWat(state.scenarioClockIso)}</span>
                 <div className="seg" role="group" aria-label="Role">
                   {(['manager', 'operator'] as const).map((role) => (
                     <button
@@ -92,7 +88,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                     </button>
                   ))}
                 </div>
-                <span className="user">{state.currentUser.name.split(' (')[0]}</span>
+                <ExtractionStatus state={state} />
                 {state.currentUser.role === 'manager' && (
                   <button className="btn btn-quiet" disabled={busy} onClick={desk.reset}>
                     Reset sample data

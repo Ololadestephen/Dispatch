@@ -1,8 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  NvidiaExtractionAgent,
-  TEST_MOCK_SUPPLIER_EXTRACTION
-} from '../../src/integrations/nvidia/extractionAgent';
+import { NvidiaExtractionAgent } from '../../src/integrations/nvidia/extractionAgent';
 import { ZetarisClient } from '../../src/integrations/zetaris/client';
 import { DEMO_SUPPLIER_MESSAGE } from '../../src/demo/seedData';
 import { ModelOutageError } from '../../src/domain/errors';
@@ -11,14 +8,41 @@ const reply = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.useRealTimers();
 });
 
 describe('Provider HTTP contracts (mocked transport, no provider calls)', () => {
+  it('uses the verified text model by default and preserves explicit overrides', () => {
+    vi.stubEnv('NVIDIA_MODEL', '');
+    expect(new NvidiaExtractionAgent({ apiKey: 'nvapi-test' }).getModelName()).toBe(
+      'nvidia/nemotron-3.5-lightning-30b-a3b'
+    );
+    expect(
+      new NvidiaExtractionAgent({ apiKey: 'nvapi-test', model: 'explicit-model' }).getModelName()
+    ).toBe('explicit-model');
+  });
+
   it('verifies the NVIDIA request and decodes grounded provider output', async () => {
     const fetch = vi.fn().mockResolvedValue(
       reply({
-        choices: [{ message: { content: JSON.stringify(TEST_MOCK_SUPPLIER_EXTRACTION) } }],
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                arrivalText: 'Monday 26 Oct, 9am',
+                shipmentQuantity: 60,
+                itemDescription: 'gold chiavari chairs',
+                evidencePassageIds: ['p1', 'p2'],
+                ignoredInstructionPassageIds: ['p3'],
+                uncertainties: [],
+                findingExplanation: 'Supplier moved the shipment to Monday.',
+                backupLookup: 'not_needed',
+                backupReason: 'No trusted order context supplied.'
+              })
+            }
+          }
+        ],
         usage: { prompt_tokens: 400, completion_tokens: 100, total_tokens: 500 }
       })
     );
@@ -34,12 +58,31 @@ describe('Provider HTTP contracts (mocked transport, no provider calls)', () => 
     expect(request.headers.Authorization).toBe('Bearer nvapi-synthetic-test-key');
     expect(JSON.parse(request.body)).toMatchObject({
       model: 'test-model',
+      stream: false,
       temperature: 0,
-      max_tokens: 1024
+      max_tokens: 1024,
+      response_format: { type: 'json_schema', json_schema: { strict: true } }
     });
     expect(result.extraction.delayedQuantity).toBe(60);
     expect(result.metrics.totalTokens).toBe(500);
-    expect(result.resolvedQuotes[0]?.text).toContain('Monday 26 Oct');
+    expect(result.resolvedQuotes.map((quote) => quote.text).join(' ')).toContain('Monday 26 Oct');
+  });
+
+  it('disables reasoning for the verified Nemotron text model', async () => {
+    const fetch = vi.fn().mockResolvedValue(reply({ choices: [{ message: { content: '{}' } }] }));
+    vi.stubGlobal('fetch', fetch);
+    const agent = new NvidiaExtractionAgent({
+      apiKey: 'nvapi-synthetic-test-key',
+      model: 'nvidia/nemotron-3.5-lightning-30b-a3b'
+    });
+    await expect(
+      agent.extractSupplierFindings(DEMO_SUPPLIER_MESSAGE.rawMessageText)
+    ).rejects.toThrow(ModelOutageError);
+    expect(JSON.parse(fetch.mock.calls[0]![1].body)).toMatchObject({
+      stream: false,
+      chat_template_kwargs: { enable_thinking: false }
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('classifies a schema-invalid model response as a model outage', async () => {
@@ -74,11 +117,21 @@ describe('Provider HTTP contracts (mocked transport, no provider calls)', () => 
     const agent = new NvidiaExtractionAgent({ apiKey: 'nvapi-synthetic-test-key', timeoutMs: 20 });
     const rejection = expect(
       agent.extractSupplierFindings(DEMO_SUPPLIER_MESSAGE.rawMessageText)
-    ).rejects.toThrow(ModelOutageError);
+    ).rejects.toThrow('timed out after 20ms');
     await vi.advanceTimersByTimeAsync(20);
     await rejection;
     expect(signal?.aborted).toBe(true);
   }, 500);
+
+  it('does not retry or fall back if the endpoint rejects structured output', async () => {
+    const fetch = vi.fn().mockResolvedValue(reply({ error: 'Unsupported response_format' }, 400));
+    vi.stubGlobal('fetch', fetch);
+    const agent = new NvidiaExtractionAgent({ apiKey: 'nvapi-synthetic-test-key' });
+    await expect(
+      agent.extractSupplierFindings(DEMO_SUPPLIER_MESSAGE.rawMessageText)
+    ).rejects.toThrow('HTTP 400');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 
   it('authenticates, refreshes an expired Zetaris token, and decodes rows', async () => {
     const fetch = vi

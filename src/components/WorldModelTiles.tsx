@@ -80,42 +80,34 @@ export function MatchesTile({
   const pending = state.worldModel.pendingMatches;
   const recent = state.worldModel.recentMatches;
   const manager = state.currentUser.role === 'manager';
+  if (pending.length === 0 && recent.length === 0) return null;
 
   return (
     <Tile
       title="Matches to review"
       className="span-12"
-      aside={
-        <Pill tone={pending.length ? 'pending' : 'neutral'}>
-          {pending.length ? `${pending.length} pending` : 'Clear'}
-        </Pill>
-      }
+      aside={pending.length > 0 ? <Pill tone="pending">{pending.length} pending</Pill> : undefined}
     >
-      {pending.length === 0 && recent.length === 0 ? (
-        <p className="empty">No supplier names in the review band.</p>
-      ) : (
-        <ul className="match-list">
-          {pending.map((match) => (
-            <MatchRow
-              key={match.proposalId}
-              match={match}
-              manager={manager}
-              busy={busy}
-              onResolve={onResolve}
-            />
-          ))}
-          {recent.map((match) => (
-            <MatchRow
-              key={match.proposalId}
-              match={match}
-              manager={manager}
-              busy={busy}
-              onResolve={onResolve}
-            />
-          ))}
-        </ul>
-      )}
-      <span className="muted">Pending and rejected matches do not change any plan.</span>
+      <ul className="match-list">
+        {pending.map((match) => (
+          <MatchRow
+            key={match.proposalId}
+            match={match}
+            manager={manager}
+            busy={busy}
+            onResolve={onResolve}
+          />
+        ))}
+        {recent.map((match) => (
+          <MatchRow
+            key={match.proposalId}
+            match={match}
+            manager={manager}
+            busy={busy}
+            onResolve={onResolve}
+          />
+        ))}
+      </ul>
     </Tile>
   );
 }
@@ -128,33 +120,35 @@ export function WorldModelTile({ state }: { state: DeskState }) {
   const headMoved = cited !== undefined && cited.eventId !== model.headEventId;
 
   return (
-    <Tile title="World Model" className="span-12" aside={<Mono>{model.implementation}</Mono>}>
-      <dl className="facts">
-        <div>
-          <dt>Namespace</dt>
-          <dd>{model.namespace}</dd>
-        </div>
-        <div>
-          <dt>Storage</dt>
-          <dd>{model.storage === 'local' ? 'Local JSON' : 'Memory'}</dd>
-        </div>
-        <div>
-          <dt>Current event</dt>
-          <dd>
-            {model.headEventId} <span className="muted">#{model.headEventSeq}</span>
-          </dd>
-        </div>
-        <div>
-          <dt>Receipt cited</dt>
-          <dd>{cited ? `${cited.eventId} #${cited.eventSeq}` : 'Not recorded'}</dd>
-        </div>
-      </dl>
-      {headMoved && (
-        <p className="muted">
-          The current head is newer than this receipt. The receipt keeps the event it actually
-          cited.
-        </p>
-      )}
+    <Tile title="World Model" className="span-12">
+      <details className="record-details">
+        <summary>Event details</summary>
+        <dl className="facts">
+          <div>
+            <dt>Engine</dt>
+            <dd>{model.implementation}</dd>
+          </div>
+          <div>
+            <dt>Namespace</dt>
+            <dd>{model.namespace}</dd>
+          </div>
+          <div>
+            <dt>Storage</dt>
+            <dd>{model.storage === 'local' ? 'Local JSON' : 'Memory'}</dd>
+          </div>
+          <div>
+            <dt>Current event</dt>
+            <dd>
+              {model.headEventId} <span className="muted">#{model.headEventSeq}</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Receipt cited</dt>
+            <dd>{cited ? `${cited.eventId} #${cited.eventSeq}` : 'Not recorded'}</dd>
+          </div>
+        </dl>
+      </details>
+      {headMoved && <Pill tone="pending">Receipt cites an earlier identity snapshot</Pill>}
 
       {context ? (
         <>
@@ -167,41 +161,34 @@ export function WorldModelTile({ state }: { state: DeskState }) {
                 <li className="match" key={supplier.canonicalId}>
                   <div className="match-head">
                     <span className="match-names">{supplier.names.join(' / ')}</span>
-                    <Pill
-                      tone={
-                        supplier.status === 'pending_review'
-                          ? 'pending'
-                          : supplier.status === 'merged'
-                            ? 'ok'
-                            : 'neutral'
-                      }
-                    >
-                      {supplier.status === 'pending_review'
-                        ? 'Awaiting manager'
-                        : supplier.status === 'merged'
-                          ? 'Merged'
-                          : 'Single name'}
-                    </Pill>
+                    {(supplier.status === 'pending_review' || supplier.status === 'merged') && (
+                      <Pill tone={supplier.status === 'pending_review' ? 'pending' : 'ok'}>
+                        {supplier.status === 'pending_review' ? 'Awaiting manager' : 'Merged'}
+                      </Pill>
+                    )}
                   </div>
-                  <ul className="source-records">
-                    {supplier.sourceRecords.map((record) => (
-                      <li key={`${record.sourceType}:${record.recordId}`}>
-                        <span>
-                          {SOURCE_LABELS[record.sourceType as keyof typeof SOURCE_LABELS] ??
-                            record.sourceType}
-                        </span>
-                        <Mono>{record.recordId}</Mono>
-                        <Mono>{record.revisionId}</Mono>
-                      </li>
-                    ))}
-                  </ul>
+                  <details className="record-details">
+                    <summary>Source records</summary>
+                    <ul className="source-records">
+                      {supplier.sourceRecords.map((record) => (
+                        <li key={`${record.sourceType}:${record.recordId}`}>
+                          <span>
+                            {SOURCE_LABELS[record.sourceType as keyof typeof SOURCE_LABELS] ??
+                              record.sourceType}
+                          </span>
+                          <Mono>{record.recordId}</Mono>
+                          <Mono>{record.revisionId}</Mono>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
                 </li>
               ))}
             </ul>
           </div>
 
-          <div>
-            <h3 className="subhead">Current context for {entityLabel(context.order)}</h3>
+          <details className="record-details">
+            <summary>Linked records for {entityLabel(context.order)}</summary>
             <ul className="list">
               {context.neighbours.map((neighbour) => (
                 <li key={`${neighbour.via}:${neighbour.entity.id}`}>
@@ -214,15 +201,14 @@ export function WorldModelTile({ state }: { state: DeskState }) {
                 </li>
               ))}
             </ul>
-          </div>
+          </details>
         </>
       ) : (
         <p className="empty">The order has not been mirrored yet.</p>
       )}
       {model.pendingMatches.length > 0 && (
         <span className="muted">
-          {model.pendingMatches.length} identity match needs a manager. Pending and rejected matches
-          do not change a plan.
+          {model.pendingMatches.length} supplier matches need manager review.
         </span>
       )}
     </Tile>

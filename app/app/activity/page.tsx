@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useDeskContext } from '@/src/client/DeskProvider';
 import type { ActivityResponse } from '@/src/client/deskState';
-import { DotPanel } from '@/src/components/app/DotPanel';
+import { EmptyPanel } from '@/src/components/app/EmptyPanel';
 
 type AuditEvent = ActivityResponse['events'][number];
 
@@ -31,7 +31,6 @@ export default function ActivityPage() {
     <>
       <div className="page-head">
         <h1 className="page-title">Activity</h1>
-        <span className="caption">All orders</span>
       </div>
       {error && (
         <p className="pill pill-risk" role="alert">
@@ -67,7 +66,7 @@ export default function ActivityPage() {
           </section>
         </div>
       ) : (
-        <DotPanel title="No activity yet." />
+        <EmptyPanel title="No activity yet." />
       )}
     </>
   );

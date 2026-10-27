@@ -18,7 +18,7 @@ function situation(state: DeskState): { tone: EyebrowTone; eyebrow: string; line
   if (!r) {
     return {
       tone: '',
-      eyebrow: `${order.orderId} · Order ${order.operationalStatus} · Not investigated`,
+      eyebrow: `Order ${order.operationalStatus} · Not investigated`,
       line: `${formatQuantityWithUnit(order.requiredQuantity, order.sku)} promised for ${day}.`
     };
   }
@@ -26,13 +26,13 @@ function situation(state: DeskState): { tone: EyebrowTone; eyebrow: string; line
     case 'incomplete':
       return {
         tone: 'risk',
-        eyebrow: `${order.orderId} · Investigation incomplete`,
+        eyebrow: 'Investigation incomplete',
         line: 'The supplier message could not be read.'
       };
     case 'stale':
       return {
         tone: 'risk',
-        eyebrow: `${order.orderId} · ${
+        eyebrow: `${
           r.invalidatedReason === 'backup_conflict'
             ? 'Backup stock taken — re-plan'
             : 'Source changed — review required'
@@ -43,25 +43,25 @@ function situation(state: DeskState): { tone: EyebrowTone; eyebrow: string; line
     case 'approved':
       return {
         tone: 'pending',
-        eyebrow: `${order.orderId} · Approved — not yet confirmed`,
+        eyebrow: 'Approved — not yet confirmed',
         line: `${r.agentFindings.headline}.`
       };
     case 'confirmed':
       return {
         tone: 'ok',
-        eyebrow: `${order.orderId} · Recovery confirmed (simulated)`,
+        eyebrow: 'Recovery confirmed (simulated)',
         line: `${formatQuantityWithUnit(order.requiredQuantity, order.sku)} covered for ${day}.`
       };
     case 'on_track':
       return {
         tone: 'ok',
-        eyebrow: `${order.orderId} · On track — no action needed`,
+        eyebrow: 'On track — no action needed',
         line: `${formatQuantityWithUnit(order.requiredQuantity, order.sku)} covered for ${day}.`
       };
     default:
       return {
         tone: 'risk',
-        eyebrow: `${order.orderId} · At risk · ${state.statusLabel ?? ''}`,
+        eyebrow: state.statusLabel ?? 'At risk',
         line: `${r.agentFindings.headline}.`
       };
   }
@@ -109,18 +109,17 @@ export function Hero({
   const approvalIssue = availabilityIssue ?? candidateIssue;
 
   return (
-    <section className="hero" aria-label="Order">
+    <section className="hero" data-investigated={Boolean(r)} aria-label="Order">
       <div>
         <span className={`eyebrow ${s.tone}`}>
           <i className="dot" aria-hidden="true" />
           {s.eyebrow}
         </span>
-        <h1 className="display">
-          {s.line}
-          <span>
-            {order.eventName} · {formatWat(order.deliveryDeadlineIso)}
-          </span>
-        </h1>
+        <h1 className="display">{s.line}</h1>
+        <p className="order-meta">
+          <span>{order.eventName}</span>
+          <time dateTime={order.deliveryDeadlineIso}>{formatWat(order.deliveryDeadlineIso)}</time>
+        </p>
 
         <div className="hero-actions">
           {r?.status === 'awaiting_approval' && (
@@ -154,27 +153,26 @@ export function Hero({
         </div>
       </div>
 
-      <dl className="stats" aria-label="Quantities">
-        <div className="stat">
-          <dt>Promised</dt>
-          <dd>{order.requiredQuantity}</dd>
-        </div>
-        <div className="stat">
-          <dt>Usable now</dt>
-          <dd>{c ? c.usableAvailable : '—'}</dd>
-        </div>
-        <div className="stat">
-          <dt>Arriving in time</dt>
-          <dd>{c ? c.eligibleIncoming : '—'}</dd>
-        </div>
-        <div
-          className="stat short"
-          data-open={Boolean(c && c.shortfall > 0 && r?.status !== 'confirmed')}
-        >
-          <dt>Short</dt>
-          <dd>{c ? c.shortfall : '—'}</dd>
-        </div>
-      </dl>
+      {c && (
+        <dl className="stats" aria-label="Quantities">
+          <div className="stat">
+            <dt>Promised</dt>
+            <dd>{order.requiredQuantity}</dd>
+          </div>
+          <div className="stat">
+            <dt>Usable now</dt>
+            <dd>{c.usableAvailable}</dd>
+          </div>
+          <div className="stat">
+            <dt>Arriving in time</dt>
+            <dd>{c.eligibleIncoming}</dd>
+          </div>
+          <div className="stat short" data-open={c.shortfall > 0 && r?.status !== 'confirmed'}>
+            <dt>{r?.status === 'confirmed' ? 'Short at review' : 'Short'}</dt>
+            <dd>{c.shortfall}</dd>
+          </div>
+        </dl>
+      )}
     </section>
   );
 }

@@ -60,12 +60,13 @@ describe('Live NVIDIA extraction (2 calls)', () => {
 
   it('produces a live receipt: 60 short, Monday arrival excluded, instruction ignored', async () => {
     const clock = new FrozenClock(FROZEN_SCENARIO_TIME_ISO);
+    const agent = new NvidiaExtractionAgent();
     const service = new InvestigationService(
       sources,
-      new NvidiaExtractionAgent(),
+      agent,
       new RecoveryService(clock),
       clock,
-      createDispatchScout({ dataDir: scoutDir, modelId: 'meta/llama-3.2-11b-vision-instruct' }),
+      createDispatchScout({ dataDir: scoutDir, modelId: agent.getModelName() }),
       evidenceDir
     );
 

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { AnySourceEnvelope, DeskState, SourceChange } from '../client/deskState';
-import { BACKING_SYSTEM_LABELS, SOURCE_LABELS, shortHash, sourceTable } from '../client/format';
+import { BACKING_SYSTEM_LABELS, SOURCE_LABELS } from '../client/format';
 import { itemUnitLabel } from '../domain/itemUnit';
 import { Mono, Pill, Tile } from './primitives';
 
@@ -103,10 +103,7 @@ export function SourcesTile({
               <span className="muted">
                 {BACKING_SYSTEM_LABELS[e.backingSystem] ?? e.backingSystem}
               </span>
-              <Mono>{sourceTable(e.sourceId)}</Mono>
-              <Mono>
-                {e.revisionId} · {shortHash(e.snapshotHash)}
-              </Mono>
+              <Mono>{e.revisionId}</Mono>
             </button>
           </li>
         ))}

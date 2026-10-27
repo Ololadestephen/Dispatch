@@ -6,8 +6,6 @@ import type { BackupAvailability } from '../domain/reservation';
 import { formatNaira, formatWat, LOOKUP_LABELS, sourceTable } from '../client/format';
 import { formatQuantityWithUnit } from '../domain/itemUnit';
 import { Mono, Pill, Tile } from './primitives';
-import { StepPlayer } from './bencho/StepPlayer';
-import './bencho/StepPlayer.css';
 
 export function DecisionTile({ receipt }: { receipt: DecisionReceipt }) {
   const c = receipt.calculations;
@@ -46,11 +44,7 @@ export function DecisionTile({ receipt }: { receipt: DecisionReceipt }) {
   ];
 
   return (
-    <Tile
-      title={`Decision receipt v${receipt.version}`}
-      className="span-7"
-      aside={<Pill>Computed by code</Pill>}
-    >
+    <Tile title={`Decision receipt v${receipt.version}`} className="span-7">
       <div className="decision">
         <table className="math">
           <tbody>
@@ -105,7 +99,7 @@ export function OptionTile({
     <Tile
       title="Recovery option"
       className="span-5"
-      aside={<Pill tone="pending">Listing — not confirmed</Pill>}
+      aside={o ? <Pill tone="pending">Listing — not confirmed</Pill> : undefined}
     >
       {o ? (
         <>
@@ -164,7 +158,8 @@ const STATUS_TONE = { ok: 'ok', missing: 'pending', error: 'risk' } as const;
 export function LookupsTile({ receipt }: { receipt: DecisionReceipt }) {
   const steps = receipt.investigationSteps ?? [];
   const [at, setAt] = useState(0);
-  const step = steps[Math.min(at, steps.length - 1)];
+  const selectedIndex = Math.min(at, steps.length - 1);
+  const step = steps[selectedIndex];
   if (!step) return null;
 
   return (
@@ -173,9 +168,26 @@ export function LookupsTile({ receipt }: { receipt: DecisionReceipt }) {
       className="span-7"
       aside={receipt.scout ? <Pill tone="ok">Under Scout contract</Pill> : <Pill>No contract</Pill>}
     >
-      {steps.length >= 3 && (
-        <StepPlayer key={receipt.version} steps={steps.length} pace={1.6} onStep={setAt} />
-      )}
+      <ol className="steps">
+        {steps.map((s, i) => (
+          <li key={s.stepIndex}>
+            <button
+              type="button"
+              className="step-row"
+              aria-label={`Step ${s.stepIndex}`}
+              aria-describedby={`lookup-${receipt.receiptId}-${receipt.version}-${s.stepIndex}`}
+              aria-current={i === selectedIndex ? 'step' : undefined}
+              onClick={() => setAt(i)}
+            >
+              <span className="step-index">{s.stepIndex}</span>
+              <span id={`lookup-${receipt.receiptId}-${receipt.version}-${s.stepIndex}`}>
+                {LOOKUP_LABELS[s.tool]}
+              </span>
+              <Pill tone={STATUS_TONE[s.status]}>{s.status}</Pill>
+            </button>
+          </li>
+        ))}
+      </ol>
       <div className="step-now" aria-live="polite">
         <div className="step-now-title">
           <span>
@@ -185,24 +197,13 @@ export function LookupsTile({ receipt }: { receipt: DecisionReceipt }) {
         </div>
         <span>{step.outcomeSummary}</span>
         {step.selectedBy === 'model' && <span>Model requested: {step.selectionReason}</span>}
-        <Mono>{sourceTable(step.sourceId)}</Mono>
-        <Mono>
-          {step.recordId} · {step.revisionId}
-        </Mono>
+        <details className="record-details">
+          <summary>Source record</summary>
+          <Mono>
+            {sourceTable(step.sourceId)} · {step.recordId} · {step.revisionId}
+          </Mono>
+        </details>
       </div>
-      <ol className="steps">
-        {steps.map((s, i) => (
-          <li key={s.stepIndex}>
-            <div className="step-row" aria-current={i === at ? 'step' : undefined}>
-              <span className="step-index">{s.stepIndex}</span>
-              <span>
-                {LOOKUP_LABELS[s.tool]} <Mono>{sourceTable(s.sourceId)}</Mono>
-              </span>
-              <Pill tone={STATUS_TONE[s.status]}>{s.status}</Pill>
-            </div>
-          </li>
-        ))}
-      </ol>
     </Tile>
   );
 }
@@ -232,7 +233,13 @@ function highlight(text: string, spans: Span[]) {
   return out;
 }
 
-export function SupplierMessageTile({ state }: { state: DeskState }) {
+export function SupplierMessageTile({
+  state,
+  className = 'span-5'
+}: {
+  state: DeskState;
+  className?: string;
+}) {
   const msg = state.sources.supplierUpdates;
   const r = state.receipt;
   // Spans only apply to the exact revision the receipt read.
@@ -250,7 +257,7 @@ export function SupplierMessageTile({ state }: { state: DeskState }) {
     : [];
 
   return (
-    <Tile title="Supplier message" className="span-5" aside={<Mono>{msg.revisionId}</Mono>}>
+    <Tile title="Supplier message" className={className} aside={<Mono>{msg.revisionId}</Mono>}>
       <p className="message">{highlight(msg.data.rawMessageText, spans)}</p>
       <span className="muted">
         {msg.data.supplierName} · {formatWat(msg.data.receivedAtIso)}

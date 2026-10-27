@@ -20,7 +20,19 @@ import {
   SEEDED_USERS
 } from '../../src/demo/seedData';
 
-const response = (extraction: unknown = TEST_MOCK_SUPPLIER_EXTRACTION) =>
+const PROVIDER_RESPONSE = {
+  arrivalText: 'Monday 26 Oct, 9am',
+  shipmentQuantity: 60,
+  itemDescription: 'gold chiavari chairs',
+  evidencePassageIds: ['p1', 'p2'],
+  ignoredInstructionPassageIds: ['p3'],
+  uncertainties: [],
+  findingExplanation: 'The supplier moved the sixty-chair shipment to Monday.',
+  backupLookup: 'request',
+  backupReason: TEST_MOCK_SUPPLIER_EXTRACTION.lookupRequests[0]!.reason
+};
+
+const response = (extraction: unknown = PROVIDER_RESPONSE) =>
   new Response(
     JSON.stringify({
       choices: [{ message: { content: JSON.stringify(extraction) } }],
@@ -167,7 +179,7 @@ describe('Investigation controls (mocked model transport, no provider calls)', (
     const backup = vi.spyOn(sources, 'lookupBackupListings');
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => response({ ...TEST_MOCK_SUPPLIER_EXTRACTION, lookupRequests: requests }))
+      vi.fn(async () => response({ ...PROVIDER_RESPONSE, lookupRequests: requests }))
     );
     const investigation = service(liveAgent());
     const { receipt } = await investigation.investigateOrder('DSP-1042', SEEDED_USERS.operator);

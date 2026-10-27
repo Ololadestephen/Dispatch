@@ -2,14 +2,14 @@
 
 import { useDeskContext } from '@/src/client/DeskProvider';
 import { RecoveryTile } from '@/src/components/RecoveryTile';
-import { DotPanel } from '@/src/components/app/DotPanel';
+import { EmptyPanel } from '@/src/components/app/EmptyPanel';
 
 export default function OrderRecovery() {
   const desk = useDeskContext();
   const { state, pending } = desk;
   if (!state) return null;
   const receipt = state.receipt;
-  if (!state.approval) return <DotPanel title="Nothing approved yet." />;
+  if (!state.approval) return <EmptyPanel title="Nothing approved yet." />;
   return (
     <div className="bento">
       <RecoveryTile
