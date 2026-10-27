@@ -61,7 +61,13 @@ export const BackupSourceSchema = z.strictObject({
 export function parseSourceRecord<T>(schema: z.ZodType<T>, value: unknown, label: string): T {
   const result = schema.safeParse(value);
   if (!result.success) {
-    const fields = result.error.issues.map((issue) => issue.path.join('.') || 'record').join(', ');
+    const fields = result.error.issues
+      .map((issue) => {
+        const path = issue.path.join('.');
+        if (path) return path;
+        return issue.code === 'unrecognized_keys' ? issue.keys.join(', ') : 'record';
+      })
+      .join(', ');
     throw new DomainError(`${label} has invalid source fields: ${fields}.`, 'SOURCE_UNAVAILABLE');
   }
   return result.data;

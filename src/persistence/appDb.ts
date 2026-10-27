@@ -73,6 +73,7 @@ export class AppDatabase {
         DELETE FROM supplier_request_drafts;
         DELETE FROM recovery_tasks;
         DELETE FROM approvals;
+        DELETE FROM backup_reservations;
         DELETE FROM receipt_versions;
       `);
     });

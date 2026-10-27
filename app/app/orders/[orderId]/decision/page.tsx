@@ -11,7 +11,7 @@ export default function OrderDecision() {
   return (
     <div className="bento">
       <DecisionTile receipt={state.receipt} />
-      <OptionTile receipt={state.receipt} />
+      <OptionTile receipt={state.receipt} availability={state.backupAvailability} />
     </div>
   );
 }

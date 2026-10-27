@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { WorldModelReferenceSchema } from './worldModel';
 
 export const SourceTypeSchema = z.enum([
   'orders',
@@ -96,7 +97,12 @@ export const CandidateRemedySchema = z.object({
   costKobo: z.number().int().nonnegative(),
   isConfirmedReservation: z.literal(false),
   // Historical JSON name: compatibility also checks SKU/unit. Approval recomputes it.
-  isEligibleByDeadline: z.boolean()
+  isEligibleByDeadline: z.boolean(),
+  /** Source lot size before reservations. Absent on receipts saved before shared lots existed. */
+  advertisedQuantity: z.number().int().nonnegative().optional(),
+  /** Units already held by other approved plans when this receipt was built. */
+  reservedQuantity: z.number().int().nonnegative().optional(),
+  reservedByOrders: z.array(z.string()).optional()
 });
 export type CandidateRemedy = z.infer<typeof CandidateRemedySchema>;
 
@@ -113,11 +119,14 @@ export const DecisionReceiptSchema = z.object({
     'approved',
     'awaiting_confirmation',
     'confirmed',
+    'on_track',
     'rejected',
     'stale',
     'incomplete',
     'failed'
   ]),
+  /** Why a stale receipt stopped being current; absent on plans invalidated before this field. */
+  invalidatedReason: z.enum(['source_change', 'backup_conflict']).optional(),
   executionMode: z.enum(['live', 'mock', 'incomplete']).optional(),
   modelRun: z
     .object({
@@ -128,6 +137,8 @@ export const DecisionReceiptSchema = z.object({
     })
     .optional(),
   scout: ScoutRecordSchema.optional(),
+  /** Event and resolved supplier identities used when this receipt was built. */
+  worldModel: WorldModelReferenceSchema.optional(),
   sourceRevisions: z.array(SourceRevisionRefSchema),
   investigationSteps: z.array(InvestigationStepSchema).optional(),
   candidateRemedy: CandidateRemedySchema.nullable().optional(),

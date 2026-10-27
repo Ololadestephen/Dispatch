@@ -6,6 +6,7 @@ import {
   SyntheticBackupListingRecord
 } from '../../demo/seedData';
 import { ApprovalPolicy } from '../../domain/policy';
+import type { BackupAvailability } from '../../domain/reservation';
 
 export type SourceType =
   | 'orders'
@@ -32,32 +33,34 @@ export type SourceLocations = Record<
   { sourceId: string; backingSystem: BackingSystem }
 >;
 
-/** Reads one record per lookup. Throws DomainError('SOURCE_UNAVAILABLE') when a source cannot be read. */
+/** Reads records from the sources. Throws DomainError('SOURCE_UNAVAILABLE') when a source cannot be read. */
 export interface SourceReader {
   readonly providerMode: ProviderMode;
   readonly locations: SourceLocations;
+  readOrders(signal?: AbortSignal): Promise<SyntheticOrderRecord[]>;
   readOrder(orderId: string, signal?: AbortSignal): Promise<SyntheticOrderRecord | undefined>;
   readInventory(sku: string, signal?: AbortSignal): Promise<SyntheticWarehouseRecord | undefined>;
+  /** One shipment per order; the optional orderId keeps lookups from citing another order's row. */
   readInbound(
     sku: string,
+    orderId?: string,
     signal?: AbortSignal
   ): Promise<SyntheticInboundShipmentRecord | undefined>;
   readSupplierMessage(
     orderId: string,
     signal?: AbortSignal
   ): Promise<SyntheticSupplierUpdateRecord | undefined>;
-  readBackupListing(
-    sku: string,
-    signal?: AbortSignal
-  ): Promise<SyntheticBackupListingRecord | undefined>;
+  /** Every backup lot for a SKU. Selection is deterministic, but no row is hidden. */
+  readBackupListings(sku: string, signal?: AbortSignal): Promise<SyntheticBackupListingRecord[]>;
 }
 
+/** The full synthetic workspace. Kept as arrays so seeding/reset never depends on one order. */
 export interface SourceSeed {
-  order: SyntheticOrderRecord;
-  warehouse: SyntheticWarehouseRecord;
-  inboundShipment?: SyntheticInboundShipmentRecord;
-  supplierMessage: SyntheticSupplierUpdateRecord;
-  backupListing?: SyntheticBackupListingRecord | null;
+  orders: SyntheticOrderRecord[];
+  warehouses: SyntheticWarehouseRecord[];
+  inboundShipments: SyntheticInboundShipmentRecord[];
+  supplierMessages: SyntheticSupplierUpdateRecord[];
+  backupListings: SyntheticBackupListingRecord[];
 }
 
 /** Writes to the backing systems themselves (seed, reset, new source revisions). */
@@ -89,6 +92,8 @@ export interface EvidenceSnapshot {
     inboundShipments?: SourceRecordEnvelope<SyntheticInboundShipmentRecord>;
     supplierUpdates: SourceRecordEnvelope<SyntheticSupplierUpdateRecord>;
     backupListing?: SourceRecordEnvelope<SyntheticBackupListingRecord>;
+    /** Live shared-lot availability for the cited backup listing. */
+    backupAvailability?: BackupAvailability;
   };
   topology: {
     distinctBackingSystemsCount: number;
@@ -114,4 +119,6 @@ export interface AllowlistedLookupExecution<T = unknown> {
   outcomeSummary: string;
   envelope?: SourceRecordEnvelope<T>;
   policy?: ApprovalPolicy;
+  /** Present for backup-listing lookups: advertised stock minus active reservations. */
+  availability?: BackupAvailability;
 }

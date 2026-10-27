@@ -13,18 +13,23 @@ import {
   DEMO_INBOUND_SHIPMENT
 } from '../../src/demo/seedData';
 import { FROZEN_SCENARIO_TIME_ISO } from '../../src/domain/clock';
+import { runTmp } from '../support/runRoot';
+import {
+  encodeWarehouseRecords,
+  toWarehouseCsvRecord
+} from '../../src/integrations/sources/warehouseCsv';
 
 const SEED = {
-  order: DEMO_ORDER,
-  warehouse: DEMO_WAREHOUSE,
-  supplierMessage: DEMO_SUPPLIER_MESSAGE,
-  backupListing: DEMO_BACKUP_LISTING,
-  inboundShipment: DEMO_INBOUND_SHIPMENT
+  orders: [DEMO_ORDER],
+  warehouses: [DEMO_WAREHOUSE],
+  supplierMessages: [DEMO_SUPPLIER_MESSAGE],
+  backupListings: [DEMO_BACKUP_LISTING],
+  inboundShipments: [DEMO_INBOUND_SHIPMENT]
 };
 const ts = FROZEN_SCENARIO_TIME_ISO;
 
 describe('Local-files source gateway', () => {
-  const dir = path.join(process.cwd(), 'tests/.tmp/sources_local');
+  const dir = runTmp('sources_local');
   let gateway: SourceGateway;
 
   beforeEach(async () => {
@@ -73,6 +78,21 @@ describe('Local-files source gateway', () => {
       });
     }
   );
+
+  it('rewrites only the matching inventory row when a stored field contains a comma', async () => {
+    const file = path.join(dir, 'warehouse_inventory.csv');
+    const quoted = { ...DEMO_WAREHOUSE, warehouseId: 'WH,"LAG,MAIN"', revisionId: 'REV-INV-2' };
+    fs.writeFileSync(file, encodeWarehouseRecords([toWarehouseCsvRecord(quoted)]));
+    await gateway.writeWarehouse({ ...quoted, revisionId: 'REV-INV-3', damaged: 25 });
+
+    const csv = fs.readFileSync(file, 'utf8');
+    expect(csv).toContain('"WH,""LAG,MAIN"""');
+    await expect(new LocalFileStore(dir).readInventory(DEMO_ORDER.sku)).resolves.toMatchObject({
+      warehouseId: 'WH,"LAG,MAIN"',
+      revisionId: 'REV-INV-3',
+      damaged: 25
+    });
+  });
 
   it('reports an unreadable inventory file as an error lookup', async () => {
     const file = path.join(dir, 'warehouse_inventory.csv');
@@ -163,7 +183,7 @@ describe('Zetaris source reader', () => {
         throw new DomainError('Cannot reach Zetaris', 'SOURCE_UNAVAILABLE');
       }
     } as unknown as ZetarisClient;
-    const store = new LocalFileStore(path.join(process.cwd(), 'tests/.tmp/sources_unused'));
+    const store = new LocalFileStore(runTmp('sources_unused'));
     await store.seed(SEED);
     const gateway = new SourceGateway(new ZetarisReader(client), store);
     const lookup = await gateway.lookupOrder('DSP-1042', ts);
@@ -172,10 +192,7 @@ describe('Zetaris source reader', () => {
     await expect(gateway.fetchEvidenceSnapshot('DSP-1042', ts)).rejects.toThrow(
       /Cannot reach Zetaris/
     );
-    fs.rmSync(path.join(process.cwd(), 'tests/.tmp/sources_unused'), {
-      recursive: true,
-      force: true
-    });
+    fs.rmSync(runTmp('sources_unused'), { recursive: true, force: true });
   });
 
   it('a misconfigured Zetaris mode fails at startup instead of switching to local files', () => {

@@ -29,6 +29,8 @@ import {
 import { ModelUsageLedger } from '../persistence/modelUsageLedger';
 import { WorkflowDeadline } from './workflowDeadline';
 import { buildInvestigationReceipt, type ExtractionOutcome } from './investigationReceipt';
+import type { WorldModelService } from '../integrations/meterless/worldModel';
+import { answerWorldContext } from './worldModelContext';
 
 const INITIAL_CAPABILITIES: LookupCapability[] = [
   'orders.read',
@@ -54,6 +56,7 @@ export interface InvestigationRunResult {
 export class InvestigationService {
   public readonly modelUsage: ModelUsageLedger;
   private readonly limits: ExecutionLimits;
+  private readonly worldModel?: WorldModelService;
 
   constructor(
     private readonly sources: SourceGateway,
@@ -62,9 +65,10 @@ export class InvestigationService {
     private readonly clock: Clock,
     private readonly scout: Scout,
     private readonly evidenceDir?: string,
-    options: { limits?: Partial<ExecutionLimits> } = {}
+    options: { limits?: Partial<ExecutionLimits>; worldModel?: WorldModelService } = {}
   ) {
     this.limits = ExecutionLimitsSchema.parse(options.limits ?? {});
+    this.worldModel = options.worldModel;
     this.modelUsage = new ModelUsageLedger(recoveryService.database, this.limits);
   }
 
@@ -224,6 +228,16 @@ export class InvestigationService {
       );
     }
     const evidence = snapshot();
+    const reservations = this.recoveryService.listReservations();
+    const worldReference = this.worldModel
+      ? await answerWorldContext({
+          world: this.worldModel,
+          scout: this.scout,
+          trace,
+          snapshot: evidence,
+          reservations
+        })
+      : undefined;
     const receipt = buildInvestigationReceipt({
       snapshot: evidence,
       trace,
@@ -231,7 +245,8 @@ export class InvestigationService {
       scoutSpans,
       outcome,
       clock: this.clock,
-      version: (current?.version ?? 0) + 1
+      version: (current?.version ?? 0) + 1,
+      worldModel: worldReference
     });
     const metrics = outcome.ok ? outcome.bundle.metrics : outcome.metrics;
     deadline.check();

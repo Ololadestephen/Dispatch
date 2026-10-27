@@ -5,7 +5,8 @@ import { checkCandidateCompatibility, checkInboundEligibility } from '../domain/
 import { evaluateApprovalRequirement } from '../domain/policy';
 import { getRecoveryCandidateIssue } from '../domain/recoveryCandidate';
 import { parseExtractedArrivalToWatIso } from '../domain/arrivalParser';
-import { formatWat } from '../domain/time';
+import { formatWat, weekdayWat } from '../domain/time';
+import { formatQuantityWithUnit } from '../domain/itemUnit';
 import {
   validateDecisionReceipt,
   type DecisionReceipt,
@@ -21,12 +22,16 @@ import type {
   VerifiedExtractionBundle
 } from '../integrations/nvidia/extractionAgent';
 import type { LookupTrace } from './lookupPlan';
+import type { WorldModelReference } from '../domain/worldModel';
 
 export type ExtractionOutcome =
   | { ok: true; bundle: VerifiedExtractionBundle }
   | { ok: false; error: Error; metrics: ModelCallMetrics };
 
-export function snapshotToSourceRevisions(snapshot: EvidenceSnapshot): SourceRevisionRef[] {
+export function snapshotToSourceRevisions(
+  snapshot: EvidenceSnapshot,
+  options: { includeBackup?: boolean } = {}
+): SourceRevisionRef[] {
   const { orders, inventory, inboundShipments, supplierUpdates, backupListing } = snapshot.sources;
   const cited: Array<[SourceRevisionRef['sourceType'], SourceRecordEnvelope<unknown> | undefined]> =
     [
@@ -34,7 +39,7 @@ export function snapshotToSourceRevisions(snapshot: EvidenceSnapshot): SourceRev
       ['inventory', inventory],
       ['supplier_updates', supplierUpdates],
       ['inbound_shipments', inboundShipments],
-      ['backup_listings', backupListing]
+      ['backup_listings', options.includeBackup === false ? undefined : backupListing]
     ];
   return cited.flatMap(([sourceType, envelope]) =>
     envelope
@@ -73,6 +78,27 @@ function mergeIgnoredSpans(
   return merged;
 }
 
+/** True only for identities the World Model auto-merged or a manager approved. Pending loses. */
+function resolvedSameSupplier(
+  worldModel: WorldModelReference | undefined,
+  inboundRecordId: string | undefined,
+  backupRecordId: string
+): string | undefined {
+  if (!worldModel || !inboundRecordId) return undefined;
+  const groupFor = (sourceType: string, recordId: string) =>
+    worldModel.resolvedSuppliers.find((supplier) =>
+      supplier.sourceRecords.some(
+        (record) => record.sourceType === sourceType && record.recordId === recordId
+      )
+    );
+  const inbound = groupFor('inbound_shipments', inboundRecordId);
+  const backup = groupFor('backup_listings', backupRecordId);
+  if (!inbound || !backup) return undefined;
+  if (inbound.canonicalId !== backup.canonicalId) return undefined;
+  if (inbound.status === 'pending_review' || backup.status === 'pending_review') return undefined;
+  return inbound.names.join(' / ');
+}
+
 /** Pure receipt construction shared by successful and incomplete investigations. No persistence. */
 export function buildInvestigationReceipt(input: {
   snapshot: EvidenceSnapshot;
@@ -82,13 +108,15 @@ export function buildInvestigationReceipt(input: {
   outcome: ExtractionOutcome;
   clock: Clock;
   version: number;
+  worldModel?: WorldModelReference;
 }): DecisionReceipt {
-  const { snapshot, trace, scout, scoutSpans, outcome, clock, version } = input;
+  const { snapshot, trace, scout, scoutSpans, outcome, clock, version, worldModel } = input;
   const order = snapshot.sources.orders.data;
   const inventory = snapshot.sources.inventory.data;
   const supplier = snapshot.sources.supplierUpdates.data;
   const inbound = snapshot.sources.inboundShipments?.data;
   const backup = snapshot.sources.backupListing?.data;
+  const backupAvailability = snapshot.sources.backupAvailability;
   const metrics = outcome.ok ? outcome.bundle.metrics : outcome.metrics;
   const stock = calculateUsableStock(inventory);
   const latestEligibleArrivalIso = new Date(
@@ -130,7 +158,7 @@ export function buildInvestigationReceipt(input: {
       eligibleIncomingQuantity = check.eligibleQuantity;
       if (!check.isEligible && check.ineligibilityReason)
         uncertainties.push(
-          `Original supplier's ${extraction.delayedQuantity} chairs arrive ${formatWat(parsed.arrivalIso)}, after the latest usable arrival ${formatWat(check.latestEligibleArrivalIso)}.`
+          `Original supplier's ${formatQuantityWithUnit(extraction.delayedQuantity, order.sku)} arrive ${formatWat(parsed.arrivalIso)}, after the latest usable arrival ${formatWat(check.latestEligibleArrivalIso)}.`
         );
     }
   }
@@ -138,14 +166,26 @@ export function buildInvestigationReceipt(input: {
     uncertainties.push(
       'Inbound commitment could not be verified; it contributes no eligible incoming stock.'
     );
+  const shortfall = calculateShortfall({
+    requiredQuantity: order.requiredQuantity,
+    usableLocalStock: stock.usableAvailable,
+    eligibleIncomingStock: eligibleIncomingQuantity
+  });
   let candidate: CandidateRemedy | null = null;
-  if (backup) {
+  // A healthy order cites no remedy and no backup revision; a later lot change cannot make it stale.
+  if (backup && shortfall.hasShortage) {
+    const reservedByOrders = [
+      ...new Set((backupAvailability?.reservations ?? []).map((r) => r.orderId))
+    ];
     candidate = {
       listingId: backup.listingId,
       revisionId: backup.revisionId,
       supplierName: backup.supplierName,
       sku: backup.sku,
-      availableQuantity: backup.availableQuantity,
+      availableQuantity: backupAvailability?.availableQuantity ?? backup.availableQuantity,
+      advertisedQuantity: backup.availableQuantity,
+      reservedQuantity: backupAvailability?.reservedQuantity ?? 0,
+      reservedByOrders,
       statedDeliveryArrivalIso: backup.statedDeliveryArrivalIso,
       costKobo: backup.costKobo,
       isConfirmedReservation: false,
@@ -154,11 +194,23 @@ export function buildInvestigationReceipt(input: {
         constraints
       ).isCompatible
     };
+    if (backupAvailability && backupAvailability.reservedQuantity > 0) {
+      uncertainties.push(
+        `Shared backup stock: ${formatQuantityWithUnit(backupAvailability.reservedQuantity, backup.sku)} already reserved by ${reservedByOrders.join(', ')}; ${formatQuantityWithUnit(backupAvailability.availableQuantity, backup.sku)} of ${backupAvailability.advertisedQuantity} available.`
+      );
+    }
+    const sameSupplier = resolvedSameSupplier(worldModel, inbound?.shipmentId, backup.listingId);
+    if (sameSupplier) {
+      uncertainties.push(
+        `World Model resolves the inbound supplier and the backup listing to one identity (${sameSupplier}); the backup lot may not be separate stock.`
+      );
+    }
     uncertainties.push(
       'Backup supplier listing is candidate availability, NOT a confirmed reservation. Supplier confirmation required after approval.'
     );
   } else if (!trace.results['backup_listings.read']) {
-    uncertainties.push('No backup lookup was requested; no backup candidate has been evaluated.');
+    if (shortfall.hasShortage)
+      uncertainties.push('No backup lookup was requested; no backup candidate has been evaluated.');
   } else {
     uncertainties.push(
       trace.results['backup_listings.read'].status === 'error'
@@ -166,17 +218,12 @@ export function buildInvestigationReceipt(input: {
         : `No approved backup supplier listing found for SKU ${order.sku}.`
     );
   }
-  const shortfall = calculateShortfall({
-    requiredQuantity: order.requiredQuantity,
-    usableLocalStock: stock.usableAvailable,
-    eligibleIncomingStock: eligibleIncomingQuantity
-  });
   const candidateIssue = getRecoveryCandidateIssue(candidate, {
     ...constraints,
-    requiredQuantity: shortfall.shortfall
+    shortfallQuantity: shortfall.shortfall
   });
-  if (candidate && candidateIssue) uncertainties.push(candidateIssue.message);
-  const extraCostKobo = candidate?.costKobo ?? 0;
+  if (candidateIssue && shortfall.hasShortage) uncertainties.push(candidateIssue.message);
+  const extraCostKobo = shortfall.hasShortage ? (candidate?.costKobo ?? 0) : 0;
   const policy = evaluateApprovalRequirement(extraCostKobo, trace.results['policy.read']?.policy);
   const ignoredSpans = outcome.ok
     ? mergeIgnoredSpans(supplier.rawMessageText, [
@@ -193,7 +240,13 @@ export function buildInvestigationReceipt(input: {
     orderId: order.orderId,
     scenarioClockIso: clock.nowIso(),
     createdAtIso: clock.nowIso(),
-    status: outcome.ok ? (candidateIssue ? 'proposed' : 'awaiting_approval') : 'incomplete',
+    status: outcome.ok
+      ? !shortfall.hasShortage
+        ? 'on_track'
+        : candidateIssue
+          ? 'proposed'
+          : 'awaiting_approval'
+      : 'incomplete',
     executionMode: metrics.executionMode,
     modelRun: {
       model: metrics.model,
@@ -202,7 +255,8 @@ export function buildInvestigationReceipt(input: {
       attemptId: metrics.attemptId
     },
     scout,
-    sourceRevisions: snapshotToSourceRevisions(snapshot),
+    worldModel,
+    sourceRevisions: snapshotToSourceRevisions(snapshot, { includeBackup: Boolean(candidate) }),
     investigationSteps: trace.steps,
     candidateRemedy: candidate,
     calculations: {
@@ -231,7 +285,9 @@ export function buildInvestigationReceipt(input: {
     },
     agentFindings: {
       headline: outcome.ok
-        ? `${shortfall.shortfall} chairs short for Saturday`
+        ? shortfall.hasShortage
+          ? `${formatQuantityWithUnit(shortfall.shortfall, order.sku)} short for ${weekdayWat(order.deliveryDeadlineIso)}`
+          : `No shortfall — ${formatQuantityWithUnit(order.requiredQuantity, order.sku)} covered for ${weekdayWat(order.deliveryDeadlineIso)}`
         : 'Investigation incomplete — supplier message extraction failed',
       findingExplanation: outcome.ok
         ? outcome.bundle.extraction.findingExplanation

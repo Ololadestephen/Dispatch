@@ -34,11 +34,11 @@ describe('Dispatch over a real Zetaris platform', () => {
       DISPATCH_SOURCES: 'zetaris'
     });
     await gateway.seed({
-      order: DEMO_ORDER,
-      warehouse: DEMO_WAREHOUSE,
-      supplierMessage: DEMO_SUPPLIER_MESSAGE,
-      backupListing: DEMO_BACKUP_LISTING,
-      inboundShipment: DEMO_INBOUND_SHIPMENT
+      orders: [DEMO_ORDER],
+      warehouses: [DEMO_WAREHOUSE],
+      supplierMessages: [DEMO_SUPPLIER_MESSAGE],
+      backupListings: [DEMO_BACKUP_LISTING],
+      inboundShipments: [DEMO_INBOUND_SHIPMENT]
     });
   });
 

@@ -3,13 +3,12 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { InvestigationService } from '../../src/application/investigationService';
 import { createDispatchScout } from '../../src/integrations/meterless/dispatchScout';
-
-const scoutDir = path.join(process.cwd(), 'tests/.tmp/scout_key');
 import { LocalFileStore, SourceGateway } from '../../src/integrations/sources';
 import { NvidiaExtractionAgent } from '../../src/integrations/nvidia/extractionAgent';
 import { RecoveryService } from '../../src/application/recoveryService';
 import { FrozenClock, FROZEN_SCENARIO_TIME_ISO } from '../../src/domain/clock';
 import { ModelOutageError } from '../../src/domain/errors';
+import { runTmp } from '../support/runRoot';
 import {
   DEMO_ORDER,
   DEMO_WAREHOUSE,
@@ -19,8 +18,10 @@ import {
   SEEDED_USERS
 } from '../../src/demo/seedData';
 
+const scoutDir = runTmp('scout_key');
+
 describe('T10-T13: Full Source-to-Receipt Investigation & Outage Handling', () => {
-  const testDataDir = path.join(process.cwd(), 'tests/fixtures/investigation_data');
+  const testDataDir = runTmp('investigation_data');
   let sources: SourceGateway;
   let clock: FrozenClock;
   let recoveryService: RecoveryService;
@@ -32,11 +33,11 @@ describe('T10-T13: Full Source-to-Receipt Investigation & Outage Handling', () =
 
     sources = new SourceGateway(new LocalFileStore(testDataDir), new LocalFileStore(testDataDir));
     await sources.seed({
-      order: DEMO_ORDER,
-      warehouse: DEMO_WAREHOUSE,
-      supplierMessage: DEMO_SUPPLIER_MESSAGE,
-      backupListing: DEMO_BACKUP_LISTING,
-      inboundShipment: DEMO_INBOUND_SHIPMENT
+      orders: [DEMO_ORDER],
+      warehouses: [DEMO_WAREHOUSE],
+      supplierMessages: [DEMO_SUPPLIER_MESSAGE],
+      backupListings: [DEMO_BACKUP_LISTING],
+      inboundShipments: [DEMO_INBOUND_SHIPMENT]
     });
 
     clock = new FrozenClock(FROZEN_SCENARIO_TIME_ISO);
@@ -222,11 +223,11 @@ describe('T10-T13: Full Source-to-Receipt Investigation & Outage Handling', () =
     }
   ])('keeps $scenario out of the approval queue', async ({ changes }) => {
     await sources.seed({
-      order: DEMO_ORDER,
-      warehouse: DEMO_WAREHOUSE,
-      supplierMessage: DEMO_SUPPLIER_MESSAGE,
-      backupListing: { ...DEMO_BACKUP_LISTING, ...changes },
-      inboundShipment: DEMO_INBOUND_SHIPMENT
+      orders: [DEMO_ORDER],
+      warehouses: [DEMO_WAREHOUSE],
+      supplierMessages: [DEMO_SUPPLIER_MESSAGE],
+      backupListings: [{ ...DEMO_BACKUP_LISTING, ...changes }],
+      inboundShipments: [DEMO_INBOUND_SHIPMENT]
     });
     const service = new InvestigationService(
       sources,

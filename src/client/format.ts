@@ -2,7 +2,7 @@ import { formatNaira } from '../domain/policy';
 import type { AllowlistedLookupTool, SourceType } from '../domain/receipt';
 
 export { formatNaira };
-export { formatWat } from '../domain/time';
+export { formatWat, weekdayWat } from '../domain/time';
 
 export const SOURCE_LABELS: Record<SourceType, string> = {
   orders: 'Order',
@@ -33,13 +33,6 @@ export const BACKING_SYSTEM_LABELS: Record<string, string> = {
 /** "zetaris:DISPATCH_FILES.warehouse_inventory" -> "DISPATCH_FILES.warehouse_inventory". */
 export function sourceTable(sourceId: string): string {
   return sourceId.replace(/^(zetaris|local|app):/, '');
-}
-
-const watWeekday = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Lagos', weekday: 'long' });
-
-/** "Saturday" for a WAT deadline. */
-export function weekdayWat(iso: string): string {
-  return watWeekday.format(new Date(iso));
 }
 
 export function shortHash(hash: string | undefined): string {

@@ -16,6 +16,28 @@ On Thursday 22 Oct 2026, 15:00 WAT (a frozen scenario clock), a Lagos rental com
 
 A backup listing offers 60 chairs for an extra ₦90,000, arriving Saturday 07:00. Spend above ₦50,000 needs a manager.
 
+## Workspace and shared stock
+
+The workspace has seven fictional Lagos orders across gold chairs, round tables and white linen. Each uses the same investigation and recovery code:
+
+| Order | Baseline result |
+| --- | --- |
+| DSP-1042 · Adeyemi wedding | 60 chairs short; manager approval required for the backup lot. |
+| DSP-1043 · Balogun conference | 60 chairs short; initially competes with DSP-1042 for the same lot. |
+| DSP-1044 · Nwosu reception | Tables covered; no recovery needed. |
+| DSP-1045 · Suleiman wedding breakfast | 40 linen short; the available backup arrives too late. |
+| DSP-1046 · Obi luncheon | Linen covered despite an alarming supplier message. |
+| DSP-1047 · Eze launch | Tables covered; an embedded instruction is ignored. |
+| DSP-1048 · Akinyemi dinner | Chairs covered; no recovery needed. |
+
+Approval reserves backup units in a SQLite transaction. The first committed approval wins; an earlier delivery deadline does not pre-empt a hold. Competing receipts become stale when insufficient stock remains. Re-investigation evaluates the remaining lots: DSP-1043 can use the Surulere lot arriving at08:30 before its09:00 cutoff, even though that lot is too late for DSP-1042.
+
+A superseding receipt, source invalidation or manager cancellation releases the hold; confirmation retains it. The local reservation is bookkeeping, not a supplier reservation. Manager-only `POST /api/cancel` takes `receiptId`, `expectedVersion`, `idempotencyKey` and a non-empty `reason` (at most240characters); it appends a rejected version and releases stock atomically. Cancellation currently has an API endpoint, without a UI button. Tasks, drafts and older receipts remain in history.
+
+Supplier names from the inbound record, message and listing enter the Meterless World Model reference resolver. `LEKKI PARTY SUPPLIES` and `Lekki Party Supplies Ltd` score0.8333 and require manager review; `Surulere Chair Bank` is a separate identity (similarity0.125). Only resolved identities saved in a receipt can authorize an alternate supplier name during confirmation. Pending/rejected matches and later merges cannot retroactively grant that authority. SKU and quantity checks remain exact and deterministic.
+
+The World Model lives in `.world/dispatch.json` under `DISPATCH_DATA_DIR`. Receipts retain the event ID and bounded Scout context query used, while the Investigation page distinguishes that identity snapshot from the current mirror. The JSON mirror does not replace SQLite allocation transactions.
+
 ## What happens
 
 1. **Initial lookups.** Five Scout-authorized reads fetch the order, inventory, inbound commitment, supplier message and spend policy. Every read records its source revision and outcome.
@@ -33,8 +55,9 @@ If the model call fails, the receipt is saved as **Investigation incomplete**: n
 | --- | --- |
 | **Meterless Scout Intent** | Meterless publishes Scout Intent as a specification with an eval harness, not as a package. Dispatch implements the Stage-1 rules in `src/integrations/meterless/scout/`, without a model call. The upstream spec and harness are vendored in `vendor/meterless/scout-intent/` (Apache-2.0, commit `1742dec`). `npm run eval:scout` runs Meterless's harness against our implementation. All gates pass on its 32-example smoke corpus; that does not establish general safety or full specification conformance. |
 | What Scout does here | (1) Turns "Investigate order DSP-1042" into a signed execution contract (HMAC-SHA256, 5-minute expiry) whose tool plan lists six read-only lookups. Each lookup re-verifies the contract and refuses on a forged, expired or out-of-scope plan. (2) Screens the supplier message as untrusted content and flags sentences that ask the system to change state, independently of the model. |
+| **Meterless World Model** | The reference implementation is vendored unmodified in `vendor/meterless/world-model/` (Apache-2.0, commit `1742dec`). Dispatch mirrors records it has already read into an event-sourced local JSON store with source-revision provenance, answers the order-context query, and queues review-band supplier names for a manager. It never fetches sources or locks stock. Dispatch uses the receipt’s resolved identities for deterministic supplier-name checks; the engine grants no approval or stock authority. Its own conformance runner passes 8/8 checks and its reference smoke tests pass; that does not establish conformance of Dispatch's adapter. |
 | Model | Direct HTTPS calls to NVIDIA NIM (`meta/llama-3.2-11b-vision-instruct`). It does not go through Meterless. Latency varies; the 60-second timeout covers the request and response body. An outage or invalid output produces an "Investigation incomplete" receipt. |
-| **Zetaris** | Every source read is a Zetaris SQL query against a local install of the Zetaris hackathon platform (Docker). Orders and inbound shipments live in PostgreSQL, registered with `CREATE DATASOURCE` and `REGISTER DATASOURCE TABLES`. Warehouse stock (CSV), supplier messages and backup listings (JSON lines) are Lightning file tables under the platform's local file root. Dispatch writes seed data and new source revisions to PostgreSQL and the files directly, and reads only through Zetaris. With `DISPATCH_SOURCES=local` (mock mode and offline tests) Dispatch reads local files itself, and the UI and receipts say `local_files`. |
+| **Zetaris** | Every source read is a Zetaris SQL query against a local install of the Zetaris hackathon platform (Docker). Orders and inbound shipments live in PostgreSQL, registered with `CREATE DATASOURCE` and `REGISTER DATASOURCE TABLES`. Warehouse stock (CSV), supplier messages and backup listings (JSON array documents) are Lightning file tables under the platform's local file root. Dispatch writes seed data and new source revisions to PostgreSQL and the files directly, and reads only through Zetaris. With `DISPATCH_SOURCES=local` (mock mode and offline tests) Dispatch reads local files itself, and the UI and receipts say `local_files`. |
 | App database | SQLite through `node:sqlite`, with ordered migrations in `db/migrations`. Receipt versions and audit events are append-only. |
 
 Investigations use one extraction call, at most one model-selected backup read and 1,024 output tokens. A 120-second workflow deadline covers the source/model stages and prevents late receipt commits. Live attempts reserve 16,384 token units before contacting NVIDIA; valid reported usage releases unused allowance, while unknown or unfinished usage retains the full charge. A SQLite ledger preserves attempts and outcomes through restarts and demo reset. Its tracking start is explicit; it does not reconstruct calls made before accounting was introduced. Defaults are 100 attempts and 1,000,000 charged token units per application database. These are conservative application limits, not a provider billing estimate.
@@ -91,7 +114,7 @@ Opens on http://localhost:3000 with the live model. To try the workflow without 
 npm run dev:mock
 ```
 
-Use the Manager/Operator switch in the header. Each browser gets its own server-side session and starts as Operator. "Reset demo" (manager only) restores the baseline.
+Use the Manager/Operator switch in the header. Each browser gets its own server-side session and starts as Operator. "Reset sample data" (manager only) restores the catalogue and clears its World Model mirror; model-usage accounting survives.
 
 ## Checks
 
@@ -105,7 +128,7 @@ Offline unit and route tests: domain rules, quote resolution, sessions, validati
 npm run test:e2e
 ```
 
-Builds the app and runs eight Playwright scenarios in mock mode on desktop and mobile: recovery, manager-required permissions, operator approval at the spend threshold, revision-bound evidence highlights and Escape, partial/cancelled slider gestures, approval retries and refresh failures, infeasible backup rejection, and reapproval with source-change invalidation.
+Builds the app and runs ten Playwright scenarios in mock mode on desktop and mobile: recovery, manager-required permissions, operator approval at the spend threshold, revision-bound evidence highlights and Escape, partial/cancelled slider gestures, approval retries and refresh failures, infeasible backup rejection, reapproval with source-change invalidation, manager-only identity review, and distinct outcomes across multiple orders. Mobile checks also verify the order status stays inside the viewport.
 
 ```bash
 npm run test:live
@@ -123,7 +146,7 @@ Runs Meterless's Scout Intent eval harness (vendored) against Dispatch's impleme
 npm run test:zetaris
 ```
 
-Runs three tests against the running Zetaris platform (no model calls).
+Runs three tests against the configured Zetaris platform without model calls. The existing suite seeds synthetic records and revises stock, so it needs an isolated local test datasource; it is not a read-only production health check. Run it only against disposable sources. The live file reader requires supplier and backup records in JSON array documents; the writer can read legacy JSON-lines messages before converting them without changing the existing records.
 
 ```bash
 npm run lint
@@ -133,7 +156,7 @@ Runs the type check and the Prettier check.
 
 ## Interface
 
-One desk: the order and its next action at the top, then which data layer, router and model produced what is shown, then the receipt, lookups, supplier message, recovery, sources and history. Visual direction (two-tone serif display, warm canvas) was inspired by Aira (aira.app), found on Landdding. Three interactive components are adapted from [Bencho](https://bencho.dev) free blocks (MIT, © 2026 Lorenzo Cabra; see `src/components/bencho/NOTICE.md`):
+The landing page opens an orders workspace. Each order has Overview, Investigation, Decision and Recovery tabs; Sources filters by order and contains supplier-match review, while Activity links events across the workspace. The mobile order list keeps status and shortage visible in stacked rows. Visual direction (two-tone serif display, warm canvas) was inspired by Aira (aira.app), found on Landdding. Three interactive components are adapted from [Bencho](https://bencho.dev) free blocks (MIT, © 2026 Lorenzo Cabra; see `src/components/bencho/NOTICE.md`):
 
 - **Slide to confirm**: approves the plan and records the confirmation. It also works from the keyboard (Enter). A plain click never commits.
 - **Step player**: replays the lookups that ran under the Scout contract.
@@ -144,10 +167,10 @@ One desk: the order and its next action at the top, then which data layer, route
 ```
 app/                 page and thin API routes
 src/domain/          stock, deadlines, policy, state machine, receipt schema, quote resolution
-src/application/     investigation, lookup plan, recovery (approve, confirm, staleness)
-src/integrations/    meterless/scout (Scout Intent), zetaris/ (client, reader, backing stores), nvidia/ (model), sources/ (gateway, local-files mode)
+src/application/     investigation, lookup plan, recovery (approve, confirm, cancel, staleness)
+src/integrations/    meterless/scout (Scout Intent), meterless/worldModel (adapter), zetaris/ (client, reader, backing stores), nvidia/ (model), sources/ (gateway, local-files mode)
 scripts/             zetaris-setup.ts
-vendor/meterless/    Meterless Scout Intent spec + eval harness (Apache-2.0, unmodified)
+vendor/meterless/    Meterless Scout Intent spec + eval harness, World Model reference (Apache-2.0, unmodified)
 src/persistence/     application database, recovery records, persistent model usage
 src/server/          sessions, request handling, application composition
 src/components/      desk UI

@@ -4,6 +4,7 @@ import { ZetarisClient, zetarisConfigFromEnv } from '../zetaris/client';
 import { ZetarisReader } from '../zetaris/reader';
 import { SourceGateway } from './gateway';
 import { LocalFileStore } from './localFiles';
+import type { ActiveReservationReader } from '../../domain/reservation';
 
 export { SourceGateway } from './gateway';
 export { LocalFileStore } from './localFiles';
@@ -16,12 +17,13 @@ export { LocalFileStore } from './localFiles';
  */
 export function createSourceGateway(
   dataDir: string,
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  reservations?: ActiveReservationReader
 ): SourceGateway {
   const mode = env.DISPATCH_SOURCES ?? 'local';
   if (mode === 'local') {
     const store = new LocalFileStore(dataDir);
-    return new SourceGateway(store, store);
+    return new SourceGateway(store, store, reservations);
   }
   if (mode !== 'zetaris') {
     throw new Error(`DISPATCH_SOURCES must be "zetaris" or "local", got "${mode}".`);
@@ -36,6 +38,7 @@ export function createSourceGateway(
   }
   return new SourceGateway(
     new ZetarisReader(new ZetarisClient(zetaris)),
-    new BackingStores(stores)
+    new BackingStores(stores),
+    reservations
   );
 }

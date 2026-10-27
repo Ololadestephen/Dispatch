@@ -10,6 +10,7 @@ import { executeLookupContract } from '../../src/application/lookupPlan';
 import { LocalFileStore, SourceGateway } from '../../src/integrations/sources';
 import { loadRegistry } from '../../src/integrations/meterless/scout/registry';
 import { FROZEN_SCENARIO_TIME_ISO } from '../../src/domain/clock';
+import { runTmp } from '../support/runRoot';
 import {
   DEMO_ORDER,
   DEMO_WAREHOUSE,
@@ -18,7 +19,7 @@ import {
   DEMO_INBOUND_SHIPMENT
 } from '../../src/demo/seedData';
 
-const dataDir = path.join(process.cwd(), 'tests/.tmp/scout_unit');
+const dataDir = runTmp('scout_unit');
 const operator = { id: 'USR-OPR-02', role: 'operator' };
 
 async function investigateContract(scout: Scout) {
@@ -38,11 +39,11 @@ describe('Scout (Meterless Scout Intent spec, Dispatch implementation)', () => {
   beforeAll(async () => {
     scout = createDispatchScout({ dataDir, modelId: 'test-model' });
     await sources.seed({
-      order: DEMO_ORDER,
-      warehouse: DEMO_WAREHOUSE,
-      supplierMessage: DEMO_SUPPLIER_MESSAGE,
-      backupListing: DEMO_BACKUP_LISTING,
-      inboundShipment: DEMO_INBOUND_SHIPMENT
+      orders: [DEMO_ORDER],
+      warehouses: [DEMO_WAREHOUSE],
+      supplierMessages: [DEMO_SUPPLIER_MESSAGE],
+      backupListings: [DEMO_BACKUP_LISTING],
+      inboundShipments: [DEMO_INBOUND_SHIPMENT]
     });
   });
   afterAll(() => fs.rmSync(dataDir, { recursive: true, force: true }));

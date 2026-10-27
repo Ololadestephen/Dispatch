@@ -2,12 +2,13 @@ import crypto from 'node:crypto';
 import { DecisionReceipt, validateDecisionReceipt } from '../domain/receipt';
 import type { UserRole, UserSession } from '../domain/policy';
 import type {
-  InternalRecoveryTask,
-  SupplierRequestDraft,
   ApprovalRecord,
+  InternalRecoveryTask,
   SupplierConfirmationRecord,
+  SupplierRequestDraft,
   AuditEventRecord
 } from '../domain/recoveryRecords';
+import type { BackupReservationRecord } from '../domain/reservation';
 import { parseJsonOrThrow } from '../domain/json';
 import { AppDatabase } from './appDb';
 
@@ -68,6 +69,145 @@ export class RecoveryStore {
     return rows.map((r) =>
       validateDecisionReceipt(parseStored(r.payload_json, `Receipt ${receiptId}`))
     );
+  }
+
+  /** Latest version of every receipt, used to find competing plans for one backup lot. */
+  listLatestReceipts(): DecisionReceipt[] {
+    const rows = this.database.db
+      .prepare(
+        `
+      SELECT rv.payload_json
+      FROM receipt_versions rv
+      JOIN (
+        SELECT receipt_id, MAX(version) AS version
+        FROM receipt_versions
+        GROUP BY receipt_id
+      ) latest ON latest.receipt_id = rv.receipt_id AND latest.version = rv.version
+      ORDER BY rv.order_id ASC
+    `
+      )
+      .all() as Array<{ payload_json: string }>;
+    return rows.map((r) => validateDecisionReceipt(parseStored(r.payload_json, 'Receipt')));
+  }
+
+  listActiveReservations(backupListingId?: string): BackupReservationRecord[] {
+    return this.listReservations(backupListingId, true);
+  }
+
+  /** Full reservation history for the World Model mirror, including releases. */
+  listReservations(backupListingId?: string, activeOnly = false): BackupReservationRecord[] {
+    const sql = `
+      SELECT reservation_id, backup_listing_id, backup_revision_id, sku, order_id, receipt_id,
+             receipt_version, quantity, status, idempotency_key, created_at_iso,
+             released_at_iso, release_reason
+      FROM backup_reservations
+      WHERE ${activeOnly ? "status = 'active'" : '1 = 1'}${backupListingId ? ' AND backup_listing_id = ?' : ''}
+      ORDER BY created_at_iso ASC, reservation_id ASC
+    `;
+    const rows = (
+      backupListingId
+        ? this.database.db.prepare(sql).all(backupListingId)
+        : this.database.db.prepare(sql).all()
+    ) as Array<{
+      reservation_id: string;
+      backup_listing_id: string;
+      backup_revision_id: string;
+      sku: string;
+      order_id: string;
+      receipt_id: string;
+      receipt_version: number;
+      quantity: number;
+      status: 'active' | 'released';
+      idempotency_key: string;
+      created_at_iso: string;
+      released_at_iso: string | null;
+      release_reason: string | null;
+    }>;
+    return rows.map((row) => this.mapReservation(row));
+  }
+
+  insertReservation(record: BackupReservationRecord): void {
+    this.database.db
+      .prepare(
+        `
+      INSERT INTO backup_reservations (
+        reservation_id, backup_listing_id, backup_revision_id, sku, order_id, receipt_id,
+        receipt_version, quantity, status, idempotency_key, created_at_iso,
+        released_at_iso, release_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    `
+      )
+      .run(
+        record.reservationId,
+        record.backupListingId,
+        record.backupRevisionId,
+        record.sku,
+        record.orderId,
+        record.receiptId,
+        record.receiptVersion,
+        record.quantity,
+        record.status,
+        record.idempotencyKey,
+        record.createdAtIso,
+        record.releasedAtIso ?? null,
+        record.releaseReason ?? null
+      );
+  }
+
+  /** Marks every active reservation for a receipt released and returns what changed. */
+  releaseActiveReservations(
+    receiptId: string,
+    reason: string,
+    releasedAtIso: string
+  ): BackupReservationRecord[] {
+    const active = this.listActiveReservations().filter((r) => r.receiptId === receiptId);
+    if (active.length === 0) return [];
+    this.database.db
+      .prepare(
+        `UPDATE backup_reservations
+         SET status = 'released', released_at_iso = ?, release_reason = ?
+         WHERE receipt_id = ? AND status = 'active';`
+      )
+      .run(releasedAtIso, reason, receiptId);
+    return active.map((r) => ({
+      ...r,
+      status: 'released',
+      releasedAtIso,
+      releaseReason: reason
+    }));
+  }
+
+  private mapReservation(row: {
+    reservation_id: string;
+    backup_listing_id: string;
+    backup_revision_id: string;
+    sku: string;
+    order_id: string;
+    receipt_id: string;
+    receipt_version: number;
+    quantity: number;
+    status: 'active' | 'released';
+    idempotency_key: string;
+    created_at_iso: string;
+    released_at_iso: string | null;
+    release_reason: string | null;
+  }): BackupReservationRecord {
+    const { released_at_iso, release_reason, ...rest } = row;
+    return {
+      reservationId: rest.reservation_id,
+      backupListingId: rest.backup_listing_id,
+      backupRevisionId: rest.backup_revision_id,
+      sku: rest.sku,
+      orderId: rest.order_id,
+      receiptId: rest.receipt_id,
+      receiptVersion: rest.receipt_version,
+      quantity: rest.quantity,
+      status: rest.status,
+      idempotencyKey: rest.idempotency_key,
+      createdAtIso: rest.created_at_iso,
+      ...(released_at_iso ? { releasedAtIso: released_at_iso } : {}),
+      ...(release_reason ? { releaseReason: release_reason } : {})
+    };
   }
 
   getApproval(receiptId: string): ApprovalRecord | undefined {

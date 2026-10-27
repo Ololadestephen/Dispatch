@@ -29,11 +29,11 @@ const stores = new BackingStores(storeConfig);
 const client = new ZetarisClient(zetarisConfig);
 
 await stores.seed({
-  order: DEMO_ORDER,
-  warehouse: DEMO_WAREHOUSE,
-  supplierMessage: DEMO_SUPPLIER_MESSAGE,
-  backupListing: DEMO_BACKUP_LISTING,
-  inboundShipment: DEMO_INBOUND_SHIPMENT
+  orders: [DEMO_ORDER],
+  warehouses: [DEMO_WAREHOUSE],
+  supplierMessages: [DEMO_SUPPLIER_MESSAGE],
+  backupListings: [DEMO_BACKUP_LISTING],
+  inboundShipments: [DEMO_INBOUND_SHIPMENT]
 });
 console.log('Seeded PostgreSQL and files.');
 await stores.registerInZetaris(client);

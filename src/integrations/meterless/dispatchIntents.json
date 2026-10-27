@@ -31,9 +31,9 @@
       "roles": ["manager", "operator"],
       "examples": [
         "Investigate order DSP-1042",
-        "Investigate order DSP-1042 for delivery risk",
+        "Investigate order DSP-1045",
         "Check whether this order can still be delivered on time",
-        "Is the wedding chair order at risk"
+        "Is the table order at risk"
       ],
       "version": 1
     }

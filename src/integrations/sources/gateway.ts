@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import { DEFAULT_APPROVAL_POLICY, formatNaira } from '../../domain/policy';
 import { DomainError } from '../../domain/errors';
+import { calculateUsableStock } from '../../domain/stock';
+import { backupUnitsRequired } from '../../domain/shortfall';
 import type {
   AllowlistedLookupExecution,
   EvidenceSnapshot,
@@ -10,15 +12,58 @@ import type {
   SourceType,
   SourceWriter
 } from './types';
-import type {
-  SyntheticBackupListingRecord,
-  SyntheticInboundShipmentRecord,
-  SyntheticOrderRecord,
-  SyntheticSupplierUpdateRecord,
-  SyntheticWarehouseRecord
+import {
+  DEMO_TRANSPORT_BUFFER_MINUTES,
+  type SyntheticBackupListingRecord,
+  type SyntheticInboundShipmentRecord,
+  type SyntheticOrderRecord,
+  type SyntheticSupplierUpdateRecord,
+  type SyntheticWarehouseRecord
 } from '../../demo/seedData';
+import type { ActiveReservationReader, BackupAvailability } from '../../domain/reservation';
 
 type Tool = AllowlistedLookupExecution['tool'];
+
+/** What deterministic code needs to rank backup lots for one order. */
+export interface BackupSelectionCriteria {
+  deliveryDeadlineIso: string;
+  shortfallQuantity: number;
+  transportBufferMinutes?: number;
+}
+
+/**
+ * Deterministic lot choice: a lot that can arrive in time and cover the shortage wins; if none
+ * can, the nearest infeasible lot is still cited so the receipt can explain why. Ties are by
+ * stated arrival and then listing id, never by array order or randomness.
+ */
+export function selectBackupListing(
+  listings: SyntheticBackupListingRecord[],
+  criteria?: BackupSelectionCriteria,
+  /** Effective stock after reservations; defaults to the listing's advertised quantity. */
+  availableQuantityOf: (listing: SyntheticBackupListingRecord) => number = (listing) =>
+    listing.availableQuantity
+): SyntheticBackupListingRecord | undefined {
+  if (!criteria) return listings[0];
+  const cutoff =
+    Date.parse(criteria.deliveryDeadlineIso) -
+    (criteria.transportBufferMinutes ?? DEMO_TRANSPORT_BUFFER_MINUTES) * 60_000;
+  const ranked = listings.map((listing) => {
+    const arrival = Date.parse(listing.statedDeliveryArrivalIso);
+    return {
+      listing,
+      arrival: Number.isNaN(arrival) ? Number.POSITIVE_INFINITY : arrival,
+      eligible: !Number.isNaN(arrival) && arrival <= cutoff,
+      sufficient: availableQuantityOf(listing) >= criteria.shortfallQuantity
+    };
+  });
+  ranked.sort((a, b) => {
+    if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
+    if (a.sufficient !== b.sufficient) return a.sufficient ? -1 : 1;
+    if (a.arrival !== b.arrival) return a.arrival - b.arrival;
+    return a.listing.listingId.localeCompare(b.listing.listingId);
+  });
+  return ranked[0]?.listing;
+}
 
 function sha256(value: unknown): string {
   return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -32,7 +77,8 @@ function sha256(value: unknown): string {
 export class SourceGateway {
   constructor(
     private readonly reader: SourceReader,
-    private readonly writer: SourceWriter
+    private readonly writer: SourceWriter,
+    private readonly reservations?: ActiveReservationReader
   ) {}
 
   get providerMode() {
@@ -41,6 +87,17 @@ export class SourceGateway {
 
   isSeeded(): Promise<boolean> {
     return this.writer.isSeeded();
+  }
+
+  async listOrders(signal?: AbortSignal): Promise<SyntheticOrderRecord[]> {
+    return this.reader.readOrders(signal);
+  }
+
+  async readOrderRecord(
+    orderId: string,
+    signal?: AbortSignal
+  ): Promise<SyntheticOrderRecord | undefined> {
+    return this.reader.readOrder(orderId, signal);
   }
 
   seed(seed: SourceSeed): Promise<void> {
@@ -85,18 +142,20 @@ export class SourceGateway {
     );
   }
 
-  lookupInbound(sku: string, ts: string, signal?: AbortSignal) {
+  lookupInbound(sku: string, ts: string, signal?: AbortSignal, orderId?: string) {
     return this.lookup<SyntheticInboundShipmentRecord>(
       'get_inbound',
-      { sku },
+      orderId ? { sku, order_id: orderId } : { sku },
       'inbound_shipments',
       ts,
-      () => this.reader.readInbound(sku, signal),
+      () => this.reader.readInbound(sku, orderId, signal),
       (i) => ({
         recordId: i.shipmentId,
         summary: `Inbound ${i.shipmentId} (${i.supplierName}): ${i.originallyExpectedQuantity} x ${i.sku}, status=${i.status}`
       }),
-      `No scheduled inbound shipment for SKU ${sku}`
+      orderId
+        ? `No scheduled inbound shipment for order ${orderId}`
+        : `No scheduled inbound shipment for SKU ${sku}`
     );
   }
 
@@ -115,19 +174,57 @@ export class SourceGateway {
     );
   }
 
-  lookupBackupListings(sku: string, ts: string, signal?: AbortSignal) {
-    return this.lookup<SyntheticBackupListingRecord>(
+  async lookupBackupListings(
+    sku: string,
+    ts: string,
+    signal?: AbortSignal,
+    criteria?: BackupSelectionCriteria
+  ) {
+    const availabilityOf = (listing: SyntheticBackupListingRecord) =>
+      this.backupAvailability(listing);
+    const execution = await this.lookup<SyntheticBackupListingRecord>(
       'get_backup_listings',
-      { sku },
+      criteria
+        ? {
+            sku,
+            order_deadline: criteria.deliveryDeadlineIso,
+            shortage: String(criteria.shortfallQuantity)
+          }
+        : { sku },
       'backup_listings',
       ts,
-      () => this.reader.readBackupListing(sku, signal),
+      async () =>
+        selectBackupListing(
+          await this.reader.readBackupListings(sku, signal),
+          criteria,
+          (listing) => availabilityOf(listing).availableQuantity
+        ),
       (b) => ({
         recordId: b.listingId,
         summary: `Candidate listing ${b.listingId} (${b.supplierName}): ${b.availableQuantity} x ${b.sku} at ${formatNaira(b.costKobo)}, stated arrival ${b.statedDeliveryArrivalIso} (unconfirmed candidate)`
       }),
       `No approved backup listing for SKU ${sku}`
     );
+    if (!execution.envelope) return execution;
+    const availability = availabilityOf(execution.envelope.data);
+    return {
+      ...execution,
+      availability,
+      outcomeSummary: `${execution.outcomeSummary} — ${availability.availableQuantity} available, ${availability.reservedQuantity} reserved by active plans`
+    };
+  }
+
+  /** Advertised stock minus every active reservation for this lot. */
+  backupAvailability(listing: SyntheticBackupListingRecord): BackupAvailability {
+    const reservations = this.reservations?.listActiveReservations(listing.listingId) ?? [];
+    const reservedQuantity = reservations.reduce((sum, r) => sum + r.quantity, 0);
+    return {
+      listingId: listing.listingId,
+      advertisedQuantity: listing.availableQuantity,
+      reservedQuantity,
+      availableQuantity: Math.max(0, listing.availableQuantity - reservedQuantity),
+      reservations
+    };
   }
 
   /** The spend policy is application configuration, not a business source. */
@@ -150,11 +247,25 @@ export class SourceGateway {
   async fetchEvidenceSnapshot(orderId: string, capturedAtIso: string): Promise<EvidenceSnapshot> {
     const order = await this.lookupOrder(orderId, capturedAtIso);
     const sku = order.envelope?.data.sku ?? 'UNKNOWN';
-    const [inventory, inbound, supplier, backup] = await Promise.all([
-      this.lookupInventory(sku, capturedAtIso),
-      this.lookupInbound(sku, capturedAtIso),
+    const orderRecord = order.envelope?.data;
+    const inventory = await this.lookupInventory(sku, capturedAtIso);
+    const usable = inventory.envelope?.data
+      ? calculateUsableStock(inventory.envelope.data).usableAvailable
+      : 0;
+    const [inbound, supplier, backup] = await Promise.all([
+      this.lookupInbound(sku, capturedAtIso, undefined, orderId),
       this.lookupSupplierMessages(orderId, capturedAtIso),
-      this.lookupBackupListings(sku, capturedAtIso)
+      this.lookupBackupListings(
+        sku,
+        capturedAtIso,
+        undefined,
+        orderRecord
+          ? {
+              deliveryDeadlineIso: orderRecord.deliveryDeadlineIso,
+              shortfallQuantity: backupUnitsRequired(orderRecord.requiredQuantity, usable)
+            }
+          : undefined
+      )
     ]);
     return this.snapshotFromLookups(orderId, capturedAtIso, {
       order,
@@ -191,10 +302,19 @@ export class SourceGateway {
       inventory: required(lookups.inventory),
       inboundShipments: lookups.inbound?.envelope,
       supplierUpdates: required(lookups.supplier),
-      backupListing: lookups.backup?.envelope
+      backupListing: lookups.backup?.envelope,
+      backupAvailability: lookups.backup?.availability
     };
     const systems = [
-      ...new Set(Object.values(sources).flatMap((e) => (e ? [e.backingSystem] : [])))
+      ...new Set(
+        [
+          sources.orders,
+          sources.inventory,
+          sources.inboundShipments,
+          sources.supplierUpdates,
+          sources.backupListing
+        ].flatMap((e) => (e ? [e.backingSystem] : []))
+      )
     ];
     return {
       snapshotId: `SNP-${orderId}-${Date.now()}`,

@@ -2,7 +2,9 @@
 
 import { useState } from 'react';
 import type { DecisionReceipt, DeskState } from '../client/deskState';
+import type { BackupAvailability } from '../domain/reservation';
 import { formatNaira, formatWat, LOOKUP_LABELS, sourceTable } from '../client/format';
+import { formatQuantityWithUnit } from '../domain/itemUnit';
 import { Mono, Pill, Tile } from './primitives';
 import { StepPlayer } from './bencho/StepPlayer';
 import './bencho/StepPlayer.css';
@@ -85,9 +87,20 @@ export function DecisionTile({ receipt }: { receipt: DecisionReceipt }) {
   );
 }
 
-export function OptionTile({ receipt }: { receipt: DecisionReceipt }) {
+export function OptionTile({
+  receipt,
+  availability
+}: {
+  receipt: DecisionReceipt;
+  availability?: BackupAvailability | null;
+}) {
   const o = receipt.candidateRemedy;
   const f = receipt.financial;
+  const holders = availability ? [...new Set(availability.reservations.map((r) => r.orderId))] : [];
+  const holderLabel = holders
+    .map((orderId) => (orderId === receipt.orderId ? 'this plan' : orderId))
+    .join(', ');
+  const actionable = ['proposed', 'awaiting_approval'].includes(receipt.status);
   return (
     <Tile
       title="Recovery option"
@@ -102,8 +115,21 @@ export function OptionTile({ receipt }: { receipt: DecisionReceipt }) {
               <dd>{o.supplierName}</dd>
             </div>
             <div>
-              <dt>Offers</dt>
-              <dd>{o.availableQuantity} chairs</dd>
+              <dt>Available</dt>
+              <dd>
+                {formatQuantityWithUnit(
+                  availability?.availableQuantity ?? o.availableQuantity,
+                  receipt.calculations.sku
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Reserved</dt>
+              <dd>
+                {availability && availability.reservedQuantity > 0
+                  ? `${formatQuantityWithUnit(availability.reservedQuantity, receipt.calculations.sku)} · ${holderLabel}`
+                  : 'None'}
+              </dd>
             </div>
             <div>
               <dt>Stated arrival</dt>
@@ -118,9 +144,11 @@ export function OptionTile({ receipt }: { receipt: DecisionReceipt }) {
             <Pill tone={o.isEligibleByDeadline ? 'ok' : 'risk'} dot>
               {o.isEligibleByDeadline ? 'Arrives in time' : 'Arrives too late'}
             </Pill>
-            <Pill tone={f.requiresManagerApproval ? 'risk' : 'neutral'}>
-              {f.requiresManagerApproval ? 'Manager approval required' : 'Within operator limit'}
-            </Pill>
+            {actionable && (
+              <Pill tone={f.requiresManagerApproval ? 'risk' : 'neutral'}>
+                {f.requiresManagerApproval ? 'Manager approval required' : 'Within operator limit'}
+              </Pill>
+            )}
           </div>
         </>
       ) : (

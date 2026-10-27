@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useParams, usePathname, useRouter } from 'next/navigation';
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { useDeskContext } from '@/src/client/DeskProvider';
 import { Hero } from '@/src/components/Hero';
 
@@ -18,15 +18,20 @@ export default function OrderLayout({ children }: { children: ReactNode }) {
   const { orderId } = useParams<{ orderId: string }>();
   const pathname = usePathname() ?? '';
   const router = useRouter();
-  const desk = useDeskContext();
-  const { state, pending, receiptForOrder } = useOrder(orderId);
-  if (!state) return null;
+  const { state, pending, orderNotFound, loadOrder, investigate, approve } = useDeskContext();
+
+  useEffect(() => {
+    if (orderNotFound === orderId) return;
+    if (state?.sources.orders.data.orderId === orderId) return;
+    void loadOrder(orderId);
+  }, [orderId, orderNotFound, loadOrder, state?.sources.orders.data.orderId]);
 
   const base = `/app/orders/${encodeURIComponent(orderId)}`;
-  if (state.sources.orders.data.orderId !== orderId) {
+  if (orderNotFound === orderId) {
     return (
       <div className="empty-panel dotted">
         <h1 className="page-title">Order not found</h1>
+        <p className="muted">{orderId} is not in this workspace.</p>
         <Link href="/app" className="btn">
           Back to orders
         </Link>
@@ -34,17 +39,27 @@ export default function OrderLayout({ children }: { children: ReactNode }) {
     );
   }
 
+  if (!state || state.sources.orders.data.orderId !== orderId) {
+    return (
+      <div className="empty-panel dotted" aria-busy="true">
+        <p className="muted">Loading {orderId}…</p>
+      </div>
+    );
+  }
+
+  const receipt = state.receipt?.orderId === orderId ? state.receipt : null;
+
   return (
     <>
       <Hero
         state={state}
         busy={pending !== null}
         investigating={pending === 'investigate'}
-        onInvestigate={() => desk.investigate(orderId)}
+        onInvestigate={() => {
+          void investigate(orderId);
+        }}
         onApprove={() =>
-          receiptForOrder
-            ? desk.approve(receiptForOrder.receiptId, receiptForOrder.version)
-            : Promise.resolve(false)
+          receipt ? approve(receipt.receiptId, receipt.version) : Promise.resolve(false)
         }
         onGoToConfirmation={() => router.push(`${base}/recovery`)}
       />
@@ -61,10 +76,4 @@ export default function OrderLayout({ children }: { children: ReactNode }) {
       {children}
     </>
   );
-}
-
-function useOrder(orderId: string) {
-  const { state, pending } = useDeskContext();
-  const receiptForOrder = state?.receipt?.orderId === orderId ? state.receipt : null;
-  return { state, pending, receiptForOrder };
 }

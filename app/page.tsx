@@ -73,7 +73,7 @@ const FAQ: Array<[string, string]> = [
   ],
   [
     'Is the data in the app real?',
-    'The app opens on a sample workspace: one fictional wedding-chair order with synthetic stock and supplier records. Supplier confirmations there are simulated and labelled so.'
+    'The app opens on a sample workspace: seven fictional event-rental orders with synthetic stock and supplier records. Supplier confirmations there are simulated and labelled so.'
   ]
 ];
 
@@ -360,7 +360,7 @@ export default function Landing() {
 
           <section className="l-section" id="integrations">
             <Reveal>
-              <SectionHead n="05" label="Built on" title="Three parts, each doing one job.">
+              <SectionHead n="05" label="Built on" title="Four parts, each doing one job.">
                 Each integration is shown in the app as it actually ran: live, mocked or not run.
               </SectionHead>
               <div className="l-features">
@@ -372,6 +372,10 @@ export default function Landing() {
                   [
                     'Meterless Scout',
                     'Signs a short-lived contract that lists the lookups allowed, and screens supplier text for injected instructions.'
+                  ],
+                  [
+                    'Meterless World Model (reference implementation)',
+                    'Resolves fragmented supplier names, keeps each fact tied to its source revision, and answers the order-context query. It never reads sources or locks stock.'
                   ],
                   [
                     'NVIDIA NIM',

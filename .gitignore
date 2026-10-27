@@ -1,5 +1,7 @@
 # Local planning and agent instructions (never commit or publish)
 AGENTS.md
+# Public upstream specification explicitly vendored for the World Model integration.
+!vendor/meterless/world-model/AGENTS.md
 PRD.md
 /ARCHITECTURE.md
 DESIGN.md

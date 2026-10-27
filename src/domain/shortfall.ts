@@ -45,3 +45,15 @@ export function calculateShortfall(input: ShortfallCalculationInput): ShortfallC
     hasShortage: shortfall > 0
   };
 }
+
+/**
+ * The quantity a backup lot must cover before supplier text is parsed. Only committed local
+ * stock counts; a delayed inbound shipment is not supply. The floor of 1 keeps lot ranking
+ * meaningful when the order needs no recovery.
+ */
+export function backupUnitsRequired(requiredQuantity: number, usableLocalStock: number): number {
+  if (!Number.isInteger(requiredQuantity) || !Number.isInteger(usableLocalStock)) {
+    throw new InconsistentInventoryError('Quantities for backup selection must be integers');
+  }
+  return Math.max(1, requiredQuantity - usableLocalStock);
+}

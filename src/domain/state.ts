@@ -9,6 +9,7 @@ export type RecoveryPlanStatus =
   | 'approved'
   | 'awaiting_confirmation'
   | 'confirmed'
+  | 'on_track'
   | 'rejected'
   | 'stale'
   | 'incomplete'
@@ -18,12 +19,14 @@ const VALID_RECOVERY_TRANSITIONS: Record<RecoveryPlanStatus, RecoveryPlanStatus[
   detected: ['proposed', 'incomplete', 'failed', 'stale'],
   proposed: ['awaiting_approval', 'approved', 'rejected', 'stale', 'incomplete'],
   awaiting_approval: ['approved', 'rejected', 'stale'],
-  approved: ['awaiting_confirmation', 'stale'],
-  awaiting_confirmation: ['confirmed', 'stale', 'failed'],
+  approved: ['awaiting_confirmation', 'stale', 'rejected'],
+  awaiting_confirmation: ['confirmed', 'stale', 'failed', 'rejected'],
   confirmed: ['stale'], // Even confirmed can become stale if underlying inventory is revised
+  // A healthy order needs no action, but a source revision can still make it re-reviewable.
+  on_track: ['stale'],
   rejected: [],
-  stale: ['proposed', 'awaiting_approval', 'incomplete'], // Re-investigation can propose a fresh plan
-  incomplete: ['proposed', 'awaiting_approval', 'incomplete', 'failed'],
+  stale: ['proposed', 'awaiting_approval', 'on_track', 'incomplete'], // Re-investigation can clear a stale plan
+  incomplete: ['proposed', 'awaiting_approval', 'on_track', 'incomplete', 'failed'],
   failed: ['proposed', 'awaiting_approval', 'incomplete']
 };
 
@@ -47,7 +50,8 @@ export function validateRecoveryTransition(
  */
 export function formatRecoveryStatusLabel(
   status: RecoveryPlanStatus,
-  requiresManagerApproval = true
+  requiresManagerApproval = true,
+  invalidatedReason?: 'source_change' | 'backup_conflict'
 ): string {
   switch (status) {
     case 'detected':
@@ -62,10 +66,14 @@ export function formatRecoveryStatusLabel(
       return 'Approved — not yet confirmed';
     case 'confirmed':
       return 'Recovery confirmed';
+    case 'on_track':
+      return 'On track — no action needed';
     case 'rejected':
       return 'Plan rejected';
     case 'stale':
-      return 'Source changed — review required';
+      return invalidatedReason === 'backup_conflict'
+        ? 'Backup stock taken — re-plan'
+        : 'Source changed — review required';
     case 'incomplete':
       return 'Investigation incomplete';
     case 'failed':

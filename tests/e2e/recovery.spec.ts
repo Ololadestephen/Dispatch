@@ -15,14 +15,16 @@ const ORDER = '/app/orders/DSP-1042';
 /** Opens a page of the app; order pages share the header with the order's next action. */
 async function open(
   page: Page,
-  where: '' | 'investigation' | 'decision' | 'recovery' | 'sources' | 'activity'
+  where: '' | 'investigation' | 'decision' | 'recovery' | 'sources' | 'activity' | 'orders'
 ) {
   const url =
     where === 'sources' || where === 'activity'
       ? `/app/${where}`
-      : where
-        ? `${ORDER}/${where}`
-        : ORDER;
+      : where === 'orders'
+        ? '/app'
+        : where
+          ? `${ORDER}/${where}`
+          : ORDER;
   await page.goto(url);
 }
 
@@ -204,6 +206,32 @@ test('partial and cancelled pointer gestures cannot approve a plan', async ({ pa
   expect(approvalRequests).toBe(0);
 });
 
+test('a manager resolves a review-band supplier match; an operator sees it read-only', async ({
+  page
+}) => {
+  await freshDemo(page);
+  await page.goto('/app/orders/DSP-1043');
+  await page.getByRole('button', { name: 'Investigate', exact: true }).click();
+  await expect(page.getByRole('heading', { name: /60 chairs short for Saturday/ })).toBeVisible();
+
+  await open(page, 'sources');
+  await expect(page.getByRole('heading', { name: 'Matches to review' })).toBeVisible();
+  await expect(page.getByText('Lekki Party Supplies Ltd').first()).toBeVisible();
+
+  await asRole(page, 'Operator');
+  await expect(page.getByText('Manager decision required')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Approve merge' })).toHaveCount(0);
+
+  await asRole(page, 'Manager');
+  await page.getByRole('button', { name: 'Approve merge' }).click();
+  await expect(page.getByText('Identity decision saved', { exact: true })).toBeVisible();
+  await expect(page.getByText('Merged', { exact: true })).toBeVisible();
+
+  await open(page, 'activity');
+  await expect(page.getByText(/World Model match approved/)).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Workspace', exact: true })).toBeVisible();
+});
+
 test('an approval retry reuses its key and survives a failed state refresh after commit', async ({
   page
 }) => {
@@ -224,7 +252,7 @@ test('an approval retry reuses its key and survives a failed state refresh after
       await route.continue();
     }
   });
-  await page.route('**/api/state', async (route) => {
+  await page.route('**/api/orders/*/state', async (route) => {
     if (failRefresh) {
       failRefresh = false;
       await route.fulfill({
@@ -332,4 +360,59 @@ test('reapproval and reload keep the new 50-chair plan and preserve history', as
   await page.reload();
   await expect(page.getByText(/Source changed — review required/).first()).toBeVisible();
   await expect(recovery).toHaveCount(0);
+});
+
+test('the orders list shows distinct statuses and a second order reaches its designed outcome', async ({
+  page
+}) => {
+  await freshDemo(page);
+  await open(page, 'orders');
+  await expect(page.getByText('7 orders', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'DSP-1042', exact: true })).toBeVisible();
+
+  await page.getByRole('link', { name: 'DSP-1045', exact: true }).click();
+  await expect(page).toHaveURL(/\/app\/orders\/DSP-1045$/);
+  await expect(
+    page.getByRole('heading', { name: /100 linen promised for Saturday/ })
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Investigate', exact: true }).click();
+  await expect(page.getByRole('heading', { name: /40 linen short for Saturday/ })).toBeVisible();
+  await expect(page.getByText(/Recovery proposed/).first()).toBeVisible();
+
+  await page.goto('/app/orders/DSP-1045/decision');
+  await expect(page.getByText('Listing — not confirmed')).toBeVisible();
+  await expect(page.getByText('Arrives too late')).toBeVisible();
+
+  await open(page, 'orders');
+  await expect(
+    page.getByRole('row', { name: /DSP-1045/ }).getByText('Recovery proposed')
+  ).toBeVisible();
+  await expect(
+    page.getByRole('row', { name: /DSP-1042/ }).getByText('Not investigated')
+  ).toBeVisible();
+  await expect(
+    page.getByRole('row', { name: /DSP-1044/ }).getByText('Not investigated')
+  ).toBeVisible();
+
+  await page.getByRole('link', { name: 'DSP-1044', exact: true }).click();
+  await page.getByRole('button', { name: 'Investigate', exact: true }).click();
+  await expect(page.getByText(/On track — no action needed/).first()).toBeVisible();
+
+  await open(page, 'orders');
+  await expect(
+    page.getByRole('row', { name: /DSP-1044/ }).getByText('On track — no action needed')
+  ).toBeVisible();
+  await expect(
+    page.getByRole('row', { name: /DSP-1045/ }).getByText('Recovery proposed')
+  ).toBeVisible();
+  for (const orderId of ['DSP-1044', 'DSP-1045']) {
+    const status = await page
+      .getByRole('row', { name: new RegExp(orderId) })
+      .getByRole('cell')
+      .nth(4)
+      .boundingBox();
+    expect(status).not.toBeNull();
+    expect(status!.x).toBeGreaterThanOrEqual(0);
+    expect(status!.x + status!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  }
 });

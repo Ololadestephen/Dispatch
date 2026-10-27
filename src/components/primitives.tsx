@@ -10,6 +10,7 @@ const TONE_BY_STATUS: Record<DecisionReceipt['status'], Tone> = {
   approved: 'pending',
   awaiting_confirmation: 'pending',
   confirmed: 'ok',
+  on_track: 'ok',
   rejected: 'risk',
   stale: 'risk',
   incomplete: 'risk',

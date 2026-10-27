@@ -57,11 +57,11 @@ describe('Investigation controls (mocked model transport, no provider calls)', (
     dir = fs.mkdtempSync(path.join('tests/.tmp', 'controls-'));
     sources = createSourceGateway(dir, { DISPATCH_SOURCES: 'local' });
     await sources.seed({
-      order: DEMO_ORDER,
-      warehouse: DEMO_WAREHOUSE,
-      inboundShipment: DEMO_INBOUND_SHIPMENT,
-      supplierMessage: DEMO_SUPPLIER_MESSAGE,
-      backupListing: DEMO_BACKUP_LISTING
+      orders: [DEMO_ORDER],
+      warehouses: [DEMO_WAREHOUSE],
+      inboundShipments: [DEMO_INBOUND_SHIPMENT],
+      supplierMessages: [DEMO_SUPPLIER_MESSAGE],
+      backupListings: [DEMO_BACKUP_LISTING]
     });
     recovery = new RecoveryService(clock);
   });

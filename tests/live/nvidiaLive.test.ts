@@ -31,11 +31,11 @@ describe('Live NVIDIA extraction (2 calls)', () => {
 
   beforeAll(async () => {
     await sources.seed({
-      order: DEMO_ORDER,
-      warehouse: DEMO_WAREHOUSE,
-      supplierMessage: DEMO_SUPPLIER_MESSAGE,
-      backupListing: DEMO_BACKUP_LISTING,
-      inboundShipment: DEMO_INBOUND_SHIPMENT
+      orders: [DEMO_ORDER],
+      warehouses: [DEMO_WAREHOUSE],
+      supplierMessages: [DEMO_SUPPLIER_MESSAGE],
+      backupListings: [DEMO_BACKUP_LISTING],
+      inboundShipments: [DEMO_INBOUND_SHIPMENT]
     });
   });
   afterAll(() => fs.rmSync(dataDir, { recursive: true, force: true }));

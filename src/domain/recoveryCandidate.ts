@@ -1,11 +1,13 @@
 import { checkCandidateCompatibility, type InboundEligibilityParams } from './deadline';
 import { InvalidDeadlineError } from './errors';
+import { itemUnitLabel } from './itemUnit';
 import type { CandidateRemedy } from './receipt';
+import type { BackupAvailability } from './reservation';
 
 type CandidateRequirements = Pick<
   InboundEligibilityParams,
   'orderSku' | 'deliveryDeadlineIso' | 'transportBufferMinutes' | 'clock'
-> & { requiredQuantity: number };
+> & { shortfallQuantity: number };
 
 export interface RecoveryCandidateIssue {
   code: string;
@@ -17,7 +19,7 @@ export function getRecoveryCandidateIssue(
   candidate: CandidateRemedy | null | undefined,
   requirements: CandidateRequirements
 ): RecoveryCandidateIssue | undefined {
-  if (requirements.requiredQuantity <= 0) {
+  if (requirements.shortfallQuantity <= 0) {
     return { code: 'NO_SHORTFALL', message: 'No shortage needs recovery.' };
   }
   if (!candidate) {
@@ -26,10 +28,10 @@ export function getRecoveryCandidateIssue(
   if (candidate.sku !== requirements.orderSku) {
     return { code: 'CANDIDATE_SKU_MISMATCH', message: 'Backup item does not match the order.' };
   }
-  if (candidate.availableQuantity < requirements.requiredQuantity) {
+  if (candidate.availableQuantity < requirements.shortfallQuantity) {
     return {
       code: 'INSUFFICIENT_CANDIDATE_QUANTITY',
-      message: `Backup has ${candidate.availableQuantity} of ${requirements.requiredQuantity} chairs needed.`
+      message: `Backup has ${candidate.availableQuantity} of ${requirements.shortfallQuantity} ${itemUnitLabel(requirements.orderSku, requirements.shortfallQuantity)} needed.`
     };
   }
 
@@ -59,4 +61,23 @@ export function getRecoveryCandidateIssue(
     return { code: 'CANDIDATE_TIMING_INVALID', message: 'Backup delivery time needs review.' };
   }
   return undefined;
+}
+
+/**
+ * Live check against shared-lot holds. The receipt's quantity can be out of date after another
+ * order approves, so the desk disables approval from current availability, not the saved number.
+ */
+export function getBackupAvailabilityIssue(
+  availability: BackupAvailability | null | undefined,
+  shortfallQuantity: number
+): RecoveryCandidateIssue | undefined {
+  if (!availability || availability.availableQuantity >= shortfallQuantity) return undefined;
+  const holders = [...new Set(availability.reservations.map((r) => r.orderId))];
+  return {
+    code: 'BACKUP_STOCK_TAKEN',
+    message:
+      holders.length > 0
+        ? `Backup stock taken by ${holders.join(', ')} — re-plan.`
+        : `Only ${availability.availableQuantity} of ${shortfallQuantity} backup units remain.`
+  };
 }

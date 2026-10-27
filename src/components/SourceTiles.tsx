@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { AnySourceEnvelope, DeskState, SourceChange } from '../client/deskState';
 import { BACKING_SYSTEM_LABELS, SOURCE_LABELS, shortHash, sourceTable } from '../client/format';
+import { itemUnitLabel } from '../domain/itemUnit';
 import { Mono, Pill, Tile } from './primitives';
 
 function ReviseSources({
@@ -30,7 +31,7 @@ function ReviseSources({
         }}
       >
         <label>
-          Damaged chairs
+          Damaged {itemUnitLabel(state.sources.inventory.data.sku)}
           <input
             inputMode="numeric"
             value={damaged}

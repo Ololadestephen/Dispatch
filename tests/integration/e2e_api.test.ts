@@ -1,11 +1,16 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { GET as getState } from '../../app/api/state/route';
+import { GET as getOrders } from '../../app/api/orders/route';
+import { GET as getOrderStateRoute } from '../../app/api/orders/[orderId]/state/route';
+import { GET as getActivity } from '../../app/api/activity/route';
 import { POST as switchRole } from '../../app/api/role/route';
 import { POST as investigate } from '../../app/api/investigate/route';
 import { POST as approve } from '../../app/api/approve/route';
 import { POST as confirm } from '../../app/api/confirm/route';
 import { POST as reset } from '../../app/api/reset/route';
 import { POST as reviseSource } from '../../app/api/sources/revise/route';
+import { POST as resolveWorldMatch } from '../../app/api/world-model/merge/route';
+import { POST as cancelPlan } from '../../app/api/cancel/route';
 import { getStateStore } from '../../src/server/stateStore';
 import * as stateStoreModule from '../../src/server/stateStore';
 import { NvidiaExtractionAgent } from '../../src/integrations/nvidia/extractionAgent';
@@ -30,6 +35,12 @@ const readState = async (cookie: string) =>
   (await (
     await getState(new Request('http://localhost/api/state', { headers: { cookie } }))
   ).json()) as DeskState;
+
+const readOrderState = async (cookie: string, orderId: string) =>
+  getOrderStateRoute(
+    new Request(`http://localhost/api/orders/${orderId}/state`, { headers: { cookie } }),
+    { params: Promise.resolve({ orderId }) }
+  );
 
 /** Starts a browser session the way a real browser does: the server issues the cookie. */
 async function newBrowser(role: 'manager' | 'operator'): Promise<string> {
@@ -68,6 +79,43 @@ describe('API routes: sessions, validation, roles, idempotency, staleness', () =
 
   beforeEach(async () => {
     expect((await post(reset, manager, { confirmReset: true })).status).toBe(200);
+  });
+
+  it('allows a manager to cancel once, releases the hold and hides obsolete action records', async () => {
+    const initial = await post(investigate, operator, { orderId: 'DSP-1042' });
+    const receipt = (await initial.json()).receipt as { receiptId: string; version: number };
+    const approval = await post(approve, manager, {
+      receiptId: receipt.receiptId,
+      expectedVersion: receipt.version,
+      idempotencyKey: 'cancel-approved'
+    });
+    const approved = (await approval.json()).receipt as { version: number };
+    const command = {
+      receiptId: receipt.receiptId,
+      expectedVersion: approved.version,
+      idempotencyKey: 'cancel-http',
+      reason: 'Event no longer needs the recovery lot'
+    };
+    expect((await post(cancelPlan, operator, command)).status).toBe(403);
+    expect((await post(cancelPlan, manager, { ...command, reason: '' })).status).toBe(400);
+    const cancelled = await post(cancelPlan, manager, command);
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toMatchObject({
+      receipt: { status: 'rejected', version: 3 },
+      isIdempotentReplay: false
+    });
+    const replay = await post(cancelPlan, manager, command);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ isIdempotentReplay: true });
+    const current = await readState(operator);
+    expect(current.approval).toBeNull();
+    expect(current.tasks).toEqual([]);
+    expect(current.supplierDraft).toBeNull();
+    expect(current.backupAvailability?.reservedQuantity).toBe(0);
+    expect(
+      current.worldModel.context?.neighbours.some((neighbour) => neighbour.via === 'reserves')
+    ).toBe(false);
+    expect(current.sources.orders.data.operationalStatus).toBe('confirmed');
   });
 
   it('returns a structured error when store construction fails before a session exists', async () => {
@@ -181,7 +229,14 @@ describe('API routes: sessions, validation, roles, idempotency, staleness', () =
   });
 
   it('rejects empty, malformed and over-specified bodies on every mutating route', async () => {
-    for (const handler of [approve, confirm, investigate, reviseSource, switchRole]) {
+    for (const handler of [
+      approve,
+      confirm,
+      investigate,
+      reviseSource,
+      switchRole,
+      resolveWorldMatch
+    ]) {
       expect((await post(handler, manager, {})).status).toBe(400);
       expect((await post(handler, manager, 'not json')).status).toBe(400);
     }
@@ -452,5 +507,278 @@ describe('API routes: sessions, validation, roles, idempotency, staleness', () =
     expect(
       getStateStore().appDb.db.prepare('SELECT * FROM supplier_confirmations').all()
     ).toHaveLength(2);
+  });
+
+  it('lists every catalogue order with its own latest status', async () => {
+    const before = (await (
+      await getOrders(new Request('http://localhost/api/orders', { headers: { cookie: manager } }))
+    ).json()) as { orders: Array<{ orderId: string; statusLabel: string }> };
+    expect(before.orders.map((order) => order.orderId)).toEqual([
+      'DSP-1042',
+      'DSP-1043',
+      'DSP-1044',
+      'DSP-1045',
+      'DSP-1046',
+      'DSP-1047',
+      'DSP-1048'
+    ]);
+    expect(before.orders[0]?.statusLabel).toBe('Not investigated');
+
+    expect((await post(investigate, operator, { orderId: 'DSP-1044' })).status).toBe(200);
+    const after = (await (
+      await getOrders(new Request('http://localhost/api/orders', { headers: { cookie: manager } }))
+    ).json()) as { orders: Array<{ orderId: string; statusLabel: string; shortfall: number }> };
+    expect(after.orders.find((order) => order.orderId === 'DSP-1044')).toMatchObject({
+      statusLabel: 'On track — no action needed',
+      shortfall: 0
+    });
+    expect(after.orders.find((order) => order.orderId === 'DSP-1042')?.statusLabel).toBe(
+      'Not investigated'
+    );
+  });
+
+  it('serves one order at /api/orders/[id]/state and returns a real 404 for an unknown id', async () => {
+    const response = await readOrderState(manager, 'DSP-1045');
+    expect(response.status).toBe(200);
+    const state = (await response.json()) as DeskState;
+    expect(state.sources.orders.data.orderId).toBe('DSP-1045');
+    expect(state.sources.orders.data.sku).toBe('LIN-WHITE-90');
+
+    const unknown = await readOrderState(manager, 'DSP-9999');
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toMatchObject({
+      code: 'ORDER_NOT_FOUND',
+      error: 'Order DSP-9999 does not exist in this workspace.'
+    });
+
+    expect((await post(investigate, operator, { orderId: 'DSP-9999' })).status).toBe(404);
+  });
+
+  it('revises one order’s supplier message without touching another order’s plan', async () => {
+    expect((await post(investigate, operator, { orderId: 'DSP-1042' })).status).toBe(200);
+    expect((await post(investigate, operator, { orderId: 'DSP-1043' })).status).toBe(200);
+
+    const revised = await post(reviseSource, operator, {
+      orderId: 'DSP-1043',
+      change: {
+        sourceType: 'supplier_updates',
+        rawMessageText:
+          'The 60 gold chiavari chairs for the Balogun conference will now arrive Friday 23 Oct, 5pm.'
+      }
+    });
+    expect(revised.status).toBe(200);
+    expect(((await revised.json()) as { invalidated: boolean }).invalidated).toBe(true);
+
+    const second = (await (await readOrderState(manager, 'DSP-1043')).json()) as DeskState;
+    const first = (await (await readOrderState(manager, 'DSP-1042')).json()) as DeskState;
+    expect(second.receipt?.status).toBe('stale');
+    expect(second.sources.supplierUpdates.data.rawMessageText).toContain('Friday 23 Oct, 5pm');
+    expect(first.receipt?.status).toBe('awaiting_approval');
+  });
+
+  it('invalidates every plan that shares a revised warehouse SKU', async () => {
+    for (const orderId of ['DSP-1042', 'DSP-1043', 'DSP-1048']) {
+      expect((await post(investigate, operator, { orderId })).status).toBe(200);
+    }
+
+    const revised = (await (
+      await post(reviseSource, operator, {
+        orderId: 'DSP-1043',
+        change: { sourceType: 'inventory', damaged: 25 }
+      })
+    ).json()) as { invalidatedOrders: string[] };
+    expect(revised.invalidatedOrders.sort()).toEqual(['DSP-1042', 'DSP-1043', 'DSP-1048']);
+
+    for (const orderId of ['DSP-1042', 'DSP-1043', 'DSP-1048']) {
+      const state = (await (await readOrderState(manager, orderId)).json()) as DeskState;
+      expect(state.receipt?.status).toBe('stale');
+    }
+  });
+
+  it('reserves a shared backup lot for the first approval and makes the second order re-plan', async () => {
+    expect((await post(investigate, operator, { orderId: 'DSP-1042' })).status).toBe(200);
+    expect((await post(investigate, operator, { orderId: 'DSP-1043' })).status).toBe(200);
+
+    const approved = await post(approve, manager, {
+      receiptId: 'RCP-DSP-1042-01',
+      expectedVersion: 1,
+      idempotencyKey: 'shared-lot-first-approval'
+    });
+    expect(approved.status).toBe(200);
+    expect(
+      ((await approved.json()) as { reservation: { quantity: number } }).reservation
+    ).toMatchObject({ quantity: 60 });
+
+    const loser = (await (await readOrderState(manager, 'DSP-1043')).json()) as DeskState;
+    expect(loser.receipt?.status).toBe('stale');
+    expect(loser.receipt?.invalidatedReason).toBe('backup_conflict');
+    expect(loser.statusLabel).toBe('Backup stock taken — re-plan');
+    expect(loser.backupAvailability).toMatchObject({
+      listingId: 'BCK-LST-402',
+      reservedQuantity: 60,
+      availableQuantity: 0
+    });
+    expect(loser.backupAvailability?.reservations[0]?.orderId).toBe('DSP-1042');
+
+    expect((await post(investigate, operator, { orderId: 'DSP-1043' })).status).toBe(200);
+    const replanned = (await (await readOrderState(manager, 'DSP-1043')).json()) as DeskState;
+    expect(replanned.receipt?.status).toBe('awaiting_approval');
+    expect(replanned.receipt?.candidateRemedy).toMatchObject({
+      listingId: 'BCK-LST-403',
+      availableQuantity: 80,
+      advertisedQuantity: 80,
+      reservedQuantity: 0,
+      reservedByOrders: []
+    });
+
+    const recovered = await post(approve, manager, {
+      receiptId: 'RCP-DSP-1043-01',
+      expectedVersion: replanned.receipt!.version,
+      idempotencyKey: 'shared-lot-second-approval'
+    });
+    expect(recovered.status).toBe(200);
+    expect(
+      ((await recovered.json()) as { reservation: { backupListingId: string; quantity: number } })
+        .reservation
+    ).toMatchObject({ backupListingId: 'BCK-LST-403', quantity: 60 });
+  });
+
+  it('returns activity across every order', async () => {
+    expect((await post(investigate, operator, { orderId: 'DSP-1042' })).status).toBe(200);
+    expect((await post(investigate, operator, { orderId: 'DSP-1046' })).status).toBe(200);
+
+    const response = await getActivity(
+      new Request('http://localhost/api/activity', { headers: { cookie: manager } })
+    );
+    expect(response.status).toBe(200);
+    const events = ((await response.json()) as { events: Array<{ orderId: string }> }).events;
+    expect(events.some((event) => event.orderId === 'DSP-1042')).toBe(true);
+    expect(events.some((event) => event.orderId === 'DSP-1046')).toBe(true);
+  });
+
+  it('mirrors a state read into the World Model, queues the review band, and resets it', async () => {
+    const before = (await (await readOrderState(manager, 'DSP-1043')).json()) as DeskState;
+    expect(before.worldModel.eventCount).toBeGreaterThan(0);
+    expect(before.worldModel.context?.order.name).toBe('Balogun Traders Conference');
+    expect(before.worldModel.pendingMatches).toHaveLength(1);
+    expect(before.worldModel.pendingMatches[0]?.similarity).toBeCloseTo(0.8333, 4);
+    expect(before.receipt).toBeNull();
+
+    expect((await post(reset, manager, { confirmReset: true })).status).toBe(200);
+    expect(getStateStore().worldModel.eventCount()).toBe(0);
+
+    const rebuilt = (await (await readOrderState(manager, 'DSP-1043')).json()) as DeskState;
+    expect(rebuilt.worldModel.eventCount).toBeGreaterThan(0);
+    expect(rebuilt.worldModel.headEventSeq).toBeLessThanOrEqual(before.worldModel.headEventSeq);
+    expect(rebuilt.worldModel.pendingMatches).toHaveLength(1);
+  });
+
+  it('lets only a manager resolve a review-band match and records the audit event', async () => {
+    const state = (await (await readOrderState(manager, 'DSP-1043')).json()) as DeskState;
+    const pending = state.worldModel.pendingMatches[0]!;
+    expect(
+      pending.leftName === 'Lekki Party Supplies Ltd' ||
+        pending.rightName === 'Lekki Party Supplies Ltd'
+    ).toBe(true);
+
+    expect(
+      (
+        await post(resolveWorldMatch, operator, {
+          proposalId: pending.proposalId,
+          decision: 'approve'
+        })
+      ).status
+    ).toBe(403);
+    expect(
+      (
+        await post(resolveWorldMatch, manager, {
+          proposalId: pending.proposalId,
+          decision: 'not-a-decision'
+        })
+      ).status
+    ).toBe(400);
+
+    const resolved = await post(resolveWorldMatch, manager, {
+      proposalId: pending.proposalId,
+      decision: 'approve'
+    });
+    expect(resolved.status).toBe(200);
+    expect((await resolved.json()).match).toMatchObject({
+      proposalId: pending.proposalId,
+      status: 'approved'
+    });
+
+    const after = (await (await readOrderState(manager, 'DSP-1043')).json()) as DeskState;
+    expect(after.worldModel.pendingMatches).toHaveLength(0);
+    expect(after.worldModel.recentMatches[0]).toMatchObject({
+      proposalId: pending.proposalId,
+      status: 'approved'
+    });
+
+    const activity = await getActivity(
+      new Request('http://localhost/api/activity', { headers: { cookie: manager } })
+    );
+    const events = (
+      (await activity.json()) as {
+        events: Array<{ orderId: string; eventType: string; receiptVersion: number | null }>;
+      }
+    ).events;
+    const audit = events.find((event) => event.eventType === 'world_match_approved');
+    expect(audit).toMatchObject({ orderId: 'WORKSPACE', receiptVersion: null });
+
+    // The next investigation uses the approved identity, and only adds a non-blocking note.
+    const investigation = await post(investigate, operator, { orderId: 'DSP-1043' });
+    expect(investigation.status).toBe(200);
+    const receipt = (await investigation.json()).receipt as {
+      status: string;
+      worldModel: { eventId: string };
+      agentFindings: { uncertainties: string[] };
+    };
+    expect(receipt.status).toBe('awaiting_approval');
+    expect(receipt.worldModel.eventId).toMatch(/^evt_\d+$/);
+    expect(receipt.agentFindings.uncertainties.join('\n')).toContain('one identity');
+  });
+
+  it('recovers a merge audit write on retry without applying or recording the decision twice', async () => {
+    const state = (await (await readOrderState(manager, 'DSP-1043')).json()) as DeskState;
+    const proposalId = state.worldModel.pendingMatches[0]!.proposalId;
+    await expect(
+      getStateStore().resolveWorldMatch(
+        proposalId,
+        'approve',
+        state.currentUser.role === 'manager'
+          ? { ...state.currentUser, role: 'operator' }
+          : state.currentUser
+      )
+    ).rejects.toMatchObject({ code: 'FORBIDDEN_ROLE' });
+    const audit = vi
+      .spyOn(getStateStore().recoveryService, 'recordWorkspaceEvent')
+      .mockImplementationOnce(() => {
+        throw new Error('Audit temporarily unavailable');
+      });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(
+        (await post(resolveWorldMatch, manager, { proposalId, decision: 'approve' })).status
+      ).toBe(500);
+      expect(
+        (await post(resolveWorldMatch, manager, { proposalId, decision: 'approve' })).status
+      ).toBe(200);
+      expect(
+        (await post(resolveWorldMatch, manager, { proposalId, decision: 'approve' })).status
+      ).toBe(200);
+      const events = getStateStore()
+        .recoveryService.getAuditEvents()
+        .filter((event) => event.eventType === 'world_match_approved');
+      expect(events).toHaveLength(1);
+      expect(
+        getStateStore()
+          .worldModel.matches()
+          .filter((match) => match.status === 'approved')
+      ).toHaveLength(1);
+    } finally {
+      audit.mockRestore();
+      log.mockRestore();
+    }
   });
 });

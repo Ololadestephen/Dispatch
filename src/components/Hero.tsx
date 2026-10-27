@@ -2,8 +2,9 @@
 
 import type { DeskState } from '../client/deskState';
 import { formatNaira, formatWat, weekdayWat } from '../client/format';
+import { formatQuantityWithUnit } from '../domain/itemUnit';
 import { FrozenClock } from '../domain/clock';
-import { getRecoveryCandidateIssue } from '../domain/recoveryCandidate';
+import { getBackupAvailabilityIssue, getRecoveryCandidateIssue } from '../domain/recoveryCandidate';
 import { SlideConfirm } from './bencho/SlideConfirm';
 import './bencho/SlideConfirm.css';
 
@@ -18,7 +19,7 @@ function situation(state: DeskState): { tone: EyebrowTone; eyebrow: string; line
     return {
       tone: '',
       eyebrow: `${order.orderId} · Order ${order.operationalStatus} · Not investigated`,
-      line: `${order.requiredQuantity} chairs promised for ${day}.`
+      line: `${formatQuantityWithUnit(order.requiredQuantity, order.sku)} promised for ${day}.`
     };
   }
   switch (r.status) {
@@ -31,7 +32,11 @@ function situation(state: DeskState): { tone: EyebrowTone; eyebrow: string; line
     case 'stale':
       return {
         tone: 'risk',
-        eyebrow: `${order.orderId} · Source changed — review required`,
+        eyebrow: `${order.orderId} · ${
+          r.invalidatedReason === 'backup_conflict'
+            ? 'Backup stock taken — re-plan'
+            : 'Source changed — review required'
+        }`,
         line: `${r.agentFindings.headline}.`
       };
     case 'awaiting_confirmation':
@@ -45,7 +50,13 @@ function situation(state: DeskState): { tone: EyebrowTone; eyebrow: string; line
       return {
         tone: 'ok',
         eyebrow: `${order.orderId} · Recovery confirmed (simulated)`,
-        line: `${r.calculations.shortfall} chairs covered for ${day}.`
+        line: `${formatQuantityWithUnit(order.requiredQuantity, order.sku)} covered for ${day}.`
+      };
+    case 'on_track':
+      return {
+        tone: 'ok',
+        eyebrow: `${order.orderId} · On track — no action needed`,
+        line: `${formatQuantityWithUnit(order.requiredQuantity, order.sku)} covered for ${day}.`
       };
     default:
       return {
@@ -81,13 +92,21 @@ export function Hero({
   const candidateIssue =
     r && ['proposed', 'awaiting_approval'].includes(r.status)
       ? getRecoveryCandidateIssue(r.candidateRemedy, {
-          requiredQuantity: r.calculations.shortfall,
+          shortfallQuantity: r.calculations.shortfall,
           orderSku: r.calculations.sku,
           deliveryDeadlineIso: r.timing.deliveryDeadlineIso,
           transportBufferMinutes: r.timing.transportBufferMinutes,
           clock: new FrozenClock(r.scenarioClockIso)
         })
       : undefined;
+  const availabilityIssue =
+    r &&
+    ['proposed', 'awaiting_approval'].includes(r.status) &&
+    state.backupAvailability &&
+    state.backupAvailability.reservedQuantity > 0
+      ? getBackupAvailabilityIssue(state.backupAvailability, r.calculations.shortfall)
+      : undefined;
+  const approvalIssue = availabilityIssue ?? candidateIssue;
 
   return (
     <section className="hero" aria-label="Order">
@@ -111,13 +130,13 @@ export function Hero({
                 width={300}
                 label={`Slide to approve ${formatNaira(r.financial.extraCostKobo)}`}
                 doneLabel="Approving"
-                disabled={!canApprove || busy || Boolean(candidateIssue)}
+                disabled={!canApprove || busy || Boolean(approvalIssue)}
                 onConfirm={onApprove}
               />
               {!canApprove && <span className="hint">Manager approval required.</span>}
             </>
           )}
-          {candidateIssue && <span className="pill pill-risk">{candidateIssue.message}</span>}
+          {approvalIssue && <span className="pill pill-risk">{approvalIssue.message}</span>}
           {r?.status === 'awaiting_confirmation' && (
             <button className="btn btn-primary" onClick={onGoToConfirmation}>
               Record supplier confirmation

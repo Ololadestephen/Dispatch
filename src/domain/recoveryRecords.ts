@@ -1,5 +1,6 @@
 import type { DecisionReceipt } from './receipt';
 import type { UserRole } from './policy';
+import type { BackupReservationRecord } from './reservation';
 
 export interface InternalRecoveryTask {
   taskId: string;
@@ -85,5 +86,7 @@ export interface ApprovalResult {
   approval: ApprovalRecord;
   tasks: InternalRecoveryTask[];
   supplierDraft: SupplierRequestDraft;
+  /** The shared-lot units committed by this approval. */
+  reservation: BackupReservationRecord;
   isIdempotentReplay: boolean;
 }

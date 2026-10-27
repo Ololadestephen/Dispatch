@@ -473,7 +473,7 @@ textarea {
 
 .l-features {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 14px;
 }
 
@@ -713,6 +713,23 @@ textarea {
   line-height: 1.1;
 }
 
+.page-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-2);
+}
+
+.page-filter select {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 7px 10px;
+  background: var(--bg);
+  color: var(--text);
+}
+
 /* orders table */
 .table {
   width: 100%;
@@ -844,7 +861,7 @@ textarea {
 /* integrations */
 .integrations {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -1028,8 +1045,8 @@ textarea {
 /* decision */
 .decision {
   display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-  gap: 24px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
 }
 
 .math {
@@ -1065,7 +1082,7 @@ textarea {
 
 .timeline li {
   display: grid;
-  grid-template-columns: 130px minmax(0, 1fr) auto;
+  grid-template-columns: 150px minmax(0, 1fr) auto;
   gap: 8px;
   padding: 6px 0 6px 14px;
   position: relative;
@@ -1266,6 +1283,61 @@ input[aria-invalid='true'] {
   font-weight: 600;
 }
 
+/* world model */
+.subhead {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+
+.match-list {
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+
+.match {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.match-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.match-names {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.match-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.source-records {
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+
+.source-records li {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  font-size: 0.82rem;
+}
+
 .revise summary {
   cursor: pointer;
   color: var(--text-2);
@@ -1364,6 +1436,12 @@ input[aria-invalid='true'] {
   }
 }
 
+@media (max-width: 1100px) {
+  .integrations {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 900px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
@@ -1408,6 +1486,63 @@ input[aria-invalid='true'] {
 }
 
 @media (max-width: 640px) {
+  .orders-table {
+    display: block;
+    border: 0;
+    background: transparent;
+  }
+
+  .orders-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .orders-table tbody {
+    display: grid;
+    gap: 12px;
+  }
+
+  .orders-table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+    gap: 12px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-card);
+    background: var(--bg);
+  }
+
+  .orders-table td {
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    grid-column: 1 / -1;
+  }
+
+  .orders-table td:first-child {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .orders-table td:nth-child(5) {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .orders-table td[data-label]::before {
+    content: attr(data-label) ': ';
+    color: var(--text-3);
+  }
+
+  .tabs a {
+    padding: 9px 10px;
+    font-size: 0.85rem;
+  }
+
   .integrations {
     grid-template-columns: minmax(0, 1fr);
   }

@@ -9,24 +9,29 @@ import { ExecutionLimitsSchema, type ExecutionLimits } from '../domain/execution
 import { FrozenClock, FROZEN_SCENARIO_TIME_ISO } from '../domain/clock';
 import {
   DEMO_ORDER,
-  DEMO_WAREHOUSE,
-  DEMO_SUPPLIER_MESSAGE,
-  DEMO_BACKUP_LISTING,
-  DEMO_INBOUND_SHIPMENT
+  DEMO_BACKUP_LISTINGS,
+  DEMO_INBOUND_SHIPMENTS,
+  DEMO_ORDERS,
+  DEMO_SUPPLIER_MESSAGES,
+  DEMO_WAREHOUSES
 } from '../demo/seedData';
 import { UserSession } from '../domain/policy';
 import { AppDatabase } from '../persistence/appDb';
-import type { EvidenceSnapshot } from '../integrations/sources/types';
+import type { EvidenceSnapshot, SourceSeed } from '../integrations/sources/types';
 import { createDispatchScout } from '../integrations/meterless/dispatchScout';
+import { WorldModelService } from '../integrations/meterless/worldModel';
+import type { WorldMatch } from '../domain/worldModel';
+import { DomainError } from '../domain/errors';
 
 export const DEMO_RECEIPT_ID = `RCP-${DEMO_ORDER.orderId}-01`;
 
-const DEMO_SEED = {
-  order: DEMO_ORDER,
-  warehouse: DEMO_WAREHOUSE,
-  supplierMessage: DEMO_SUPPLIER_MESSAGE,
-  backupListing: DEMO_BACKUP_LISTING,
-  inboundShipment: DEMO_INBOUND_SHIPMENT
+/** One synthetic Lagos event-rental workspace; reset always returns to exactly this. */
+export const DEMO_SEED: SourceSeed = {
+  orders: DEMO_ORDERS,
+  warehouses: DEMO_WAREHOUSES,
+  inboundShipments: DEMO_INBOUND_SHIPMENTS,
+  supplierMessages: DEMO_SUPPLIER_MESSAGES,
+  backupListings: DEMO_BACKUP_LISTINGS
 };
 
 export interface StateStoreOptions {
@@ -38,6 +43,8 @@ export interface StateStoreOptions {
   /** Source gateway; defaults to the one DISPATCH_SOURCES selects. */
   sources?: SourceGateway;
   executionLimits?: Partial<ExecutionLimits>;
+  /** Overrides the local JSON-backed World Model, e.g. an in-memory instance in a test. */
+  worldModel?: WorldModelService;
 }
 
 /**
@@ -57,6 +64,7 @@ export class StateStore {
   public readonly appDb: AppDatabase;
   public readonly sources: SourceGateway;
   public readonly recoveryService: RecoveryService;
+  public readonly worldModel: WorldModelService;
   public investigationService: InvestigationService;
   private readonly evidenceDir: string | undefined;
   private readonly dataDir: string;
@@ -93,8 +101,17 @@ export class StateStore {
           path.join(process.cwd(), '.local/evidence'));
     this.dataDir = dataDir;
     this.appDb = new AppDatabase(path.join(dataDir, 'dispatch_app.sqlite'));
-    this.sources = options.sources ?? createSourceGateway(dataDir);
     this.recoveryService = new RecoveryService(this.clock, new RecoveryStore(this.appDb));
+    this.sources =
+      options.sources ?? createSourceGateway(dataDir, process.env, this.recoveryService);
+    this.worldModel =
+      options.worldModel ??
+      new WorldModelService({
+        dataDir,
+        // Source records keep their own revision timestamps; this clock only stamps operator
+        // merge decisions, which belong to the scenario clock the rest of the desk shows.
+        clock: () => new Date(this.clock.nowIso())
+      });
     this.investigationService = this.buildInvestigationService(
       options.extractionAgent ?? extractionAgentFromEnv()
     );
@@ -126,7 +143,44 @@ export class StateStore {
   async resetDemo(): Promise<void> {
     this.appDb.clearDemoData();
     await this.sources.seed(DEMO_SEED);
+    await this.worldModel.reset();
     this.initialized = true;
+  }
+
+  /**
+   * Records a manager's identity decision in the World Model, then appends the workspace audit
+   * event. The World Model is a file-backed mirror, so the audit row is written after the change
+   * rather than in a shared transaction.
+   */
+  async resolveWorldMatch(
+    proposalId: string,
+    decision: 'approve' | 'reject',
+    actor: UserSession
+  ): Promise<WorldMatch> {
+    if (actor.role !== 'manager') {
+      throw new DomainError(
+        'Only a manager can resolve supplier identity matches.',
+        'FORBIDDEN_ROLE'
+      );
+    }
+    const match = await this.worldModel.resolveMatch(proposalId, decision, actor.name);
+    this.recoveryService.recordWorkspaceEvent(
+      actor,
+      {
+        eventType: decision === 'approve' ? 'world_match_approved' : 'world_match_rejected',
+        summary: `World Model match ${
+          decision === 'approve' ? 'approved' : 'rejected'
+        }: ${match.leftName} ${decision === 'approve' ? '→' : '≠'} ${match.rightName}`,
+        details: {
+          proposalId: match.proposalId,
+          leftName: match.leftName,
+          rightName: match.rightName,
+          similarity: match.similarity
+        }
+      },
+      `world-match:${this.worldModel.namespace}:${match.proposalId}:${match.proposedAt}:${decision}`
+    );
+    return match;
   }
 
   /**
@@ -161,7 +215,7 @@ export class StateStore {
       this.clock,
       createDispatchScout({ dataDir: this.dataDir, modelId: agent.getModelName() }),
       this.evidenceDir,
-      { limits: this.executionLimits }
+      { limits: this.executionLimits, worldModel: this.worldModel }
     );
   }
 }

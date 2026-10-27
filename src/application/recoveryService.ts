@@ -19,6 +19,8 @@ import { DomainError, VersionConflictError } from '../domain/errors';
 import { Clock } from '../domain/clock';
 import { getRecoveryCandidateIssue } from '../domain/recoveryCandidate';
 import { RecoveryStore } from '../persistence/recoveryStore';
+import type { BackupAvailability, BackupReservationRecord } from '../domain/reservation';
+import { supplierMatchesPlan } from '../domain/supplierIdentity';
 
 export class RecoveryService {
   constructor(
@@ -60,6 +62,16 @@ export class RecoveryService {
 
     this.store.transaction(() => {
       assertActive?.();
+      if (
+        existing &&
+        !['approved', 'awaiting_confirmation', 'confirmed'].includes(validated.status)
+      ) {
+        this.store.releaseActiveReservations(
+          validated.receiptId,
+          validated.status === 'rejected' ? 'cancelled' : 'superseded',
+          nowIso
+        );
+      }
       this.store.insertReceiptVersion(validated, nowIso);
 
       this.store.insertAuditEvent({
@@ -112,6 +124,137 @@ export class RecoveryService {
   }
 
   /**
+   * Appends an audit event that belongs to the workspace rather than one receipt. World Model
+   * identity review is the first such action; it must not be linked to a fabricated order id.
+   */
+  recordWorkspaceEvent(
+    actor: UserSession,
+    event: { eventType: string; summary: string; details: Record<string, unknown> },
+    idempotencyKey?: string
+  ): void {
+    this.store.transaction(() => {
+      if (
+        idempotencyKey &&
+        this.store
+          .getAuditEvents()
+          .some((existing) => existing.details.idempotencyKey === idempotencyKey)
+      )
+        return;
+      this.store.insertAuditEvent({
+        orderId: 'WORKSPACE',
+        receiptId: null,
+        receiptVersion: null,
+        eventType: event.eventType,
+        actor,
+        scenarioTimeIso: this.clock.nowIso(),
+        summary: event.summary,
+        details: { ...event.details, ...(idempotencyKey ? { idempotencyKey } : {}) }
+      });
+    });
+  }
+
+  /** Active shared-lot holds, optionally narrowed to one listing. */
+  listActiveReservations(backupListingId?: string) {
+    return this.store.listActiveReservations(backupListingId);
+  }
+
+  listReservations() {
+    return this.store.listReservations();
+  }
+
+  /** Human cancellation releases stock and appends a rejected version; it sends nothing. */
+  cancelPlan(params: {
+    receiptId: string;
+    expectedVersion: number;
+    actor: UserSession;
+    idempotencyKey: string;
+    reason: string;
+  }): { receipt: DecisionReceipt; isIdempotentReplay: boolean } {
+    if (params.actor.role !== 'manager') {
+      throw new DomainError('Only a manager can cancel a recovery plan.', 'FORBIDDEN_ROLE');
+    }
+    const reason = params.reason.trim();
+    if (!reason || reason.length > 240)
+      throw new DomainError(
+        'A cancellation needs a reason of at most 240 characters.',
+        'INVALID_REQUEST'
+      );
+    const key = `cancel:${params.receiptId}:v${params.expectedVersion}:${params.actor.userId}:${params.idempotencyKey}`;
+    return this.store.transaction(() => {
+      const previous = this.store.findIdempotentResponse<{ receipt: DecisionReceipt }>(key);
+      if (previous) return { ...previous, isIdempotentReplay: true };
+      const current = this.getReceipt(params.receiptId);
+      if (!current) throw new DomainError('Recovery receipt not found.', 'RECEIPT_NOT_FOUND');
+      if (current.version !== params.expectedVersion)
+        throw new VersionConflictError('Plan changed. Refresh before cancelling.');
+      validateRecoveryTransition(current.status, 'rejected');
+      const receipt = validateDecisionReceipt({
+        ...current,
+        version: current.version + 1,
+        status: 'rejected'
+      });
+      const at = this.clock.nowIso();
+      const released = this.store.releaseActiveReservations(current.receiptId, 'cancelled', at);
+      this.store.insertReceiptVersion(receipt, at);
+      this.store.insertAuditEvent({
+        orderId: current.orderId,
+        receiptId: current.receiptId,
+        receiptVersion: receipt.version,
+        eventType: 'plan_cancelled',
+        actor: params.actor,
+        scenarioTimeIso: at,
+        summary: `Plan v${current.version} cancelled: ${reason}`,
+        details: {
+          reason,
+          releasedReservations: released.map((reservation) => reservation.reservationId)
+        }
+      });
+      this.store.storeIdempotentResponse(
+        key,
+        current.receiptId,
+        current.version,
+        params.actor.userId,
+        at,
+        { receipt }
+      );
+      return { receipt, isIdempotentReplay: false };
+    });
+  }
+
+  /**
+   * The transaction-authoritative version check shared by approval and confirmation. A plan that
+   * lost the lot to another order is reported as taken stock, not as an opaque stale version.
+   */
+  private assertVersionCurrent(receiptId: string, expectedVersion: number, message: string): void {
+    const current = this.store.getReceipt(receiptId);
+    if (!current) throw new DomainError('Recovery receipt not found.', 'RECEIPT_NOT_FOUND');
+    if (current.version === expectedVersion) return;
+    if (current.status === 'stale' && current.invalidatedReason === 'backup_conflict') {
+      const reason =
+        current.agentFindings.uncertainties.find((entry) =>
+          entry.startsWith('Backup stock taken by')
+        ) ?? 'Backup stock taken by another order — re-plan.';
+      throw new DomainError(reason, 'BACKUP_STOCK_TAKEN');
+    }
+    throw new VersionConflictError(message);
+  }
+
+  /** Deterministic availability for one lot from the source's advertised quantity. */ getBackupAvailability(
+    listingId: string,
+    advertisedQuantity: number
+  ): BackupAvailability {
+    const reservations = this.store.listActiveReservations(listingId);
+    const reservedQuantity = reservations.reduce((sum, r) => sum + r.quantity, 0);
+    return {
+      listingId,
+      advertisedQuantity,
+      reservedQuantity,
+      availableQuantity: Math.max(0, advertisedQuantity - reservedQuantity),
+      reservations
+    };
+  }
+
+  /**
    * Applies spend policy before atomically appending approval, receipt, tasks and draft.
    * Replaying the same receipt/version/actor/key returns the original result with no writes.
    * @throws RECEIPT_NOT_FOUND, VERSION_CONFLICT, UNAUTHORIZED_APPROVAL or
@@ -158,7 +301,7 @@ export class RecoveryService {
       );
     }
     const candidateIssue = getRecoveryCandidateIssue(receipt.candidateRemedy, {
-      requiredQuantity: receipt.calculations.shortfall,
+      shortfallQuantity: receipt.calculations.shortfall,
       orderSku: receipt.calculations.sku,
       deliveryDeadlineIso: receipt.timing.deliveryDeadlineIso,
       transportBufferMinutes: receipt.timing.transportBufferMinutes,
@@ -187,6 +330,20 @@ export class RecoveryService {
       approvedAtIso: nowIso
     };
 
+    const reservation: BackupReservationRecord = {
+      reservationId: `RSV-${receiptId}-V${newVersion}`,
+      backupListingId: receipt.candidateRemedy.listingId,
+      backupRevisionId: receipt.candidateRemedy.revisionId,
+      sku: receipt.calculations.sku,
+      orderId: receipt.orderId,
+      receiptId,
+      receiptVersion: newVersion,
+      quantity: receipt.calculations.shortfall,
+      status: 'active',
+      idempotencyKey,
+      createdAtIso: nowIso
+    };
+
     const task1: InternalRecoveryTask = {
       taskId: `TSK-RESERVE-${receipt.orderId}-V${newVersion}`,
       orderId: receipt.orderId,
@@ -203,7 +360,7 @@ export class RecoveryService {
       orderId: receipt.orderId,
       receiptId,
       receiptVersion: newVersion,
-      title: `Prepare outbound delivery checklist for Saturday morning deadline`,
+      title: `Prepare outbound delivery checklist for ${formatWat(receipt.timing.deliveryDeadlineIso)}`,
       assignedRole: 'dispatch',
       status: 'pending',
       createdAtIso: nowIso
@@ -234,15 +391,56 @@ export class RecoveryService {
       approval: approvalRecord,
       tasks: createdTasks,
       supplierDraft,
+      reservation,
       isIdempotentReplay: false
     };
 
     this.store.transaction(() => {
+      // The version read above is only a fast rejection. The transaction is the authority: another
+      // connection may have committed a new version between that read and this write.
+      this.assertVersionCurrent(
+        receiptId,
+        expectedVersion,
+        `Receipt ${receiptId} changed while approving. Refresh and re-review.`
+      );
+      // First approval commits. Re-reading active holds inside this transaction is the only
+      // authority on what remains; an earlier deadline is a desk hint, never a pre-emption.
+      const advertisedQuantity =
+        receipt.candidateRemedy!.advertisedQuantity ?? receipt.candidateRemedy!.availableQuantity;
+      const reservedBefore = this.store
+        .listActiveReservations(reservation.backupListingId)
+        .reduce((sum, r) => sum + r.quantity, 0);
+      if (reservedBefore + reservation.quantity > advertisedQuantity) {
+        const holders = [
+          ...new Set(
+            this.store
+              .listActiveReservations(reservation.backupListingId)
+              .map((r) => r.orderId)
+              .filter((orderId) => orderId !== receipt.orderId)
+          )
+        ];
+        throw new DomainError(
+          holders.length > 0
+            ? `Backup stock taken by ${holders.join(', ')} — re-plan.`
+            : `Backup listing ${reservation.backupListingId} has only ${Math.max(0, advertisedQuantity - reservedBefore)} of ${reservation.quantity} units left.`,
+          'BACKUP_STOCK_TAKEN'
+        );
+      }
+
+      this.store.insertReservation(reservation);
       this.store.insertReceiptVersion(updatedReceipt, nowIso);
 
       this.store.insertApproval(approvalRecord);
       this.store.insertTasks(createdTasks);
       this.store.insertSupplierDraft(supplierDraft);
+
+      this.invalidateCompetingPlans({
+        winnerOrderId: receipt.orderId,
+        reservation,
+        advertisedQuantity,
+        nowIso,
+        actor
+      });
 
       this.store.storeIdempotentResponse(
         scopedKey,
@@ -267,12 +465,89 @@ export class RecoveryService {
           newVersion: updatedReceipt.version,
           idempotencyKey,
           tasksCreated: createdTasks.map((t) => t.taskId),
-          draftId: supplierDraft.draftId
+          draftId: supplierDraft.draftId,
+          reservationId: reservation.reservationId,
+          backupListingId: reservation.backupListingId,
+          reservedQuantity: reservation.quantity,
+          advertisedQuantity,
+          reservedBefore
         }
       });
     });
 
     return result;
+  }
+
+  /**
+   * After a winning approval, other unapproved plans citing the same lot are stale only when the
+   * remaining stock can no longer cover them. They re-investigate against the reduced quantity.
+   */
+  private invalidateCompetingPlans(params: {
+    winnerOrderId: string;
+    reservation: BackupReservationRecord;
+    advertisedQuantity: number;
+    nowIso: string;
+    actor: UserSession;
+  }): void {
+    const { winnerOrderId, reservation, advertisedQuantity, nowIso, actor } = params;
+    const remaining = Math.max(
+      0,
+      advertisedQuantity -
+        this.store
+          .listActiveReservations(reservation.backupListingId)
+          .reduce((sum, r) => sum + r.quantity, 0)
+    );
+    const reason = `Backup stock taken by ${winnerOrderId} — re-plan.`;
+
+    for (const other of this.store.listLatestReceipts()) {
+      if (
+        other.orderId === winnerOrderId ||
+        !['proposed', 'awaiting_approval'].includes(other.status) ||
+        other.candidateRemedy?.listingId !== reservation.backupListingId ||
+        other.calculations.shortfall <= remaining
+      ) {
+        continue;
+      }
+
+      validateRecoveryTransition(other.status, 'stale');
+      const updatedReceipt: DecisionReceipt = {
+        ...other,
+        version: other.version + 1,
+        status: 'stale',
+        invalidatedReason: 'backup_conflict',
+        agentFindings: {
+          ...other.agentFindings,
+          uncertainties: [...other.agentFindings.uncertainties, reason]
+        }
+      };
+      validateDecisionReceipt(updatedReceipt);
+      const released = this.store.releaseActiveReservations(
+        other.receiptId,
+        'backup_conflict',
+        nowIso
+      );
+
+      this.store.insertReceiptVersion(updatedReceipt, nowIso);
+      this.store.insertAuditEvent({
+        orderId: updatedReceipt.orderId,
+        receiptId: updatedReceipt.receiptId,
+        receiptVersion: updatedReceipt.version,
+        eventType: 'plan_invalidated_backup_conflict',
+        actor,
+        scenarioTimeIso: nowIso,
+        summary: `Plan v${other.version} marked stale: ${reason}`,
+        details: {
+          previousVersion: other.version,
+          previousStatus: other.status,
+          newVersion: updatedReceipt.version,
+          reason,
+          winningOrderId: winnerOrderId,
+          backupListingId: reservation.backupListingId,
+          remainingQuantity: remaining,
+          releasedReservationIds: released.map((r) => r.reservationId)
+        }
+      });
+    }
   }
 
   /**
@@ -354,10 +629,7 @@ export class RecoveryService {
     if (!evidenceExcerpt) {
       throw new DomainError('A confirmation needs the supplier evidence text.', 'MISSING_EVIDENCE');
     }
-    if (
-      receipt.candidateRemedy &&
-      confirmation.supplierName !== receipt.candidateRemedy.supplierName
-    ) {
+    if (receipt.candidateRemedy && !supplierMatchesPlan(receipt, confirmation.supplierName)) {
       throw new DomainError(
         `Confirmation is from ${confirmation.supplierName}, but the approved plan uses ${receipt.candidateRemedy.supplierName}.`,
         'CONFIRMATION_SUPPLIER_MISMATCH'
@@ -383,6 +655,12 @@ export class RecoveryService {
     };
 
     this.store.transaction(() => {
+      // Re-read inside the transaction: the pre-transaction check cannot see a concurrent commit.
+      this.assertVersionCurrent(
+        receiptId,
+        expectedVersion,
+        `Receipt ${receiptId} changed while recording the confirmation. Refresh and re-review.`
+      );
       this.store.insertReceiptVersion(updatedReceipt, nowIso);
 
       this.store.insertConfirmation(confirmationRecord);
@@ -451,6 +729,7 @@ export class RecoveryService {
       ...receipt,
       version: newVersion,
       status: 'stale',
+      invalidatedReason: 'source_change',
       agentFindings: {
         ...receipt.agentFindings,
         uncertainties: [...receipt.agentFindings.uncertainties, `Source invalidated: ${reason}`]
@@ -459,6 +738,7 @@ export class RecoveryService {
     validateDecisionReceipt(updatedReceipt);
 
     this.store.transaction(() => {
+      const released = this.store.releaseActiveReservations(receiptId, 'source_change', nowIso);
       this.store.insertReceiptVersion(updatedReceipt, nowIso);
 
       this.store.insertAuditEvent({
@@ -473,7 +753,8 @@ export class RecoveryService {
           previousVersion: receipt.version,
           previousStatus: receipt.status,
           newVersion: updatedReceipt.version,
-          reason
+          reason,
+          releasedReservationIds: released.map((r) => r.reservationId)
         }
       });
     });

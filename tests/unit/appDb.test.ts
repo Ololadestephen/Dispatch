@@ -90,7 +90,7 @@ it('upgrades a manager-only database without changing history, usage or integrit
     database.close();
     database = new AppDatabase(file).db;
     expect(database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({
-      count: 4
+      count: 5
     });
     expect(database.prepare('SELECT COUNT(*) AS count FROM approvals').get()).toEqual({ count: 2 });
   } finally {

@@ -1,5 +1,7 @@
 import type { InvestigationStep } from '../domain/receipt';
 import { DomainError } from '../domain/errors';
+import { calculateUsableStock } from '../domain/stock';
+import { backupUnitsRequired } from '../domain/shortfall';
 import { ModelLookupRequestsSchema } from '../domain/lookupRequest';
 import type { SourceGateway } from '../integrations/sources/gateway';
 import type { AllowlistedLookupExecution } from '../integrations/sources/types';
@@ -87,12 +89,30 @@ export async function executeLookupContract(params: {
   }
 
   let sku = previous?.results['orders.read']?.envelope?.data.sku ?? 'UNKNOWN';
+
+  /**
+   * A backup only has to cover what local stock cannot. Using the whole order quantity would
+   * reject a lot that is large enough for the real shortage, and would make shared-lot
+   * reservations look tighter than they are.
+   */
+  const backupCriteria = () => {
+    const order = results['orders.read']?.envelope?.data;
+    if (!order) return undefined;
+    const inventory = results['inventory.read']?.envelope?.data;
+    const usable = inventory ? calculateUsableStock(inventory).usableAvailable : 0;
+    return {
+      deliveryDeadlineIso: order.deliveryDeadlineIso,
+      shortfallQuantity: backupUnitsRequired(order.requiredQuantity, usable)
+    };
+  };
+
   const readers: { [K in LookupCapability]: () => Promise<NonNullable<LookupResults[K]>> } = {
     'orders.read': () => sources.lookupOrder(orderId, timestampIso, signal),
     'inventory.read': () => sources.lookupInventory(sku, timestampIso, signal),
-    'inbound.read': () => sources.lookupInbound(sku, timestampIso, signal),
+    'inbound.read': () => sources.lookupInbound(sku, timestampIso, signal, orderId),
     'supplier_messages.read': () => sources.lookupSupplierMessages(orderId, timestampIso, signal),
-    'backup_listings.read': () => sources.lookupBackupListings(sku, timestampIso, signal),
+    'backup_listings.read': () =>
+      sources.lookupBackupListings(sku, timestampIso, signal, backupCriteria()),
     'policy.read': () => sources.lookupPolicy('emergency_spend')
   };
   const results: LookupResults = { ...previous?.results };
@@ -107,7 +127,11 @@ export async function executeLookupContract(params: {
     await run('orders.read');
     sku = results['orders.read']?.envelope?.data.sku ?? 'UNKNOWN';
   }
-  await Promise.all(plan.filter((c) => c !== 'orders.read').map(run));
+  // Backup ranking needs the SKU and local usable stock, so it runs after the other reads.
+  await Promise.all(
+    plan.filter((c) => c !== 'orders.read' && c !== 'backup_listings.read').map(run)
+  );
+  if (plan.includes('backup_listings.read')) await run('backup_listings.read');
 
   const steps: InvestigationStep[] = plan.map((capability, i) => {
     const result = results[capability]!;

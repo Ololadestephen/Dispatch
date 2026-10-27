@@ -1,6 +1,5 @@
 import { RecoveryStore } from '../../src/persistence/recoveryStore';
 import fs from 'node:fs';
-import path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { RecoveryService } from '../../src/application/recoveryService';
 import { FrozenClock, FROZEN_SCENARIO_TIME_ISO } from '../../src/domain/clock';
@@ -12,12 +11,13 @@ import {
   DomainError
 } from '../../src/domain/errors';
 import { AppDatabase } from '../../src/persistence/appDb';
+import { runTmp } from '../support/runRoot';
 
 describe('RecoveryService (SQLite Durable State & Guardrails)', () => {
   let clock: FrozenClock;
   let service: RecoveryService;
   let sampleReceipt: DecisionReceipt;
-  const tempDbPath = path.join(process.cwd(), 'tests/fixtures/recovery_test.sqlite');
+  const tempDbPath = runTmp('recovery_test.sqlite');
 
   beforeEach(() => {
     if (fs.existsSync(tempDbPath)) {
@@ -130,6 +130,7 @@ describe('RecoveryService (SQLite Durable State & Guardrails)', () => {
       expect(service.getApproval(sampleReceipt.receiptId)).toBeUndefined();
       expect(service.getTasks(sampleReceipt.receiptId)).toEqual([]);
       expect(service.getSupplierDraft(sampleReceipt.receiptId)).toBeUndefined();
+      expect(service.listActiveReservations()).toEqual([]);
       expect(service.database.db.prepare('SELECT * FROM idempotency_records').all()).toEqual([]);
       service.database.db.exec('DROP TRIGGER reject_approval_audit');
       expect(service.approvePlan(request).isIdempotentReplay).toBe(false);
@@ -396,6 +397,9 @@ describe('RecoveryService (SQLite Durable State & Guardrails)', () => {
       );
       expect(svc2.getTasks('RCP-DSP-1042-01').length).toBe(2);
       expect(svc2.getSupplierDraft('RCP-DSP-1042-01')?.isSent).toBe(false);
+      expect(svc2.listActiveReservations()).toMatchObject([
+        { orderId: 'DSP-1042', quantity: 60, status: 'active' }
+      ]);
       expect(svc2.getAuditEvents('RCP-DSP-1042-01').length).toBe(2);
       db2.db.close();
     });

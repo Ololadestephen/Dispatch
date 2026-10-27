@@ -61,6 +61,13 @@ export class ModelOutageError extends DomainError {
   }
 }
 
+export class ModelBudgetExceededError extends DomainError {
+  constructor(message: string) {
+    super(message, 'MODEL_BUDGET_EXCEEDED');
+    this.name = 'ModelBudgetExceededError';
+  }
+}
+
 export class InvalidRequestError extends DomainError {
   constructor(message: string) {
     super(message, 'INVALID_REQUEST');

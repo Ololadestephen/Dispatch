@@ -47,6 +47,96 @@ function int(row: Row, column: string): number {
   return sourceInteger(str(row, column), `Zetaris column ${column}`);
 }
 
+function orderFromRow(row: Row): SyntheticOrderRecord {
+  return parseSourceRecord(
+    OrderSourceSchema,
+    {
+      orderId: str(row, 'order_id'),
+      revisionId: str(row, 'revision_id'),
+      customerName: str(row, 'customer_name'),
+      eventName: str(row, 'event_name'),
+      deliveryLocation: str(row, 'delivery_location'),
+      deliveryDeadlineIso: str(row, 'delivery_deadline_iso'),
+      sku: str(row, 'sku'),
+      itemDescription: str(row, 'item_description'),
+      requiredQuantity: int(row, 'required_quantity'),
+      operationalStatus: str(row, 'operational_status'),
+      isDemo: true
+    },
+    'Zetaris order'
+  );
+}
+
+function inboundFromRow(row: Row): SyntheticInboundShipmentRecord {
+  return parseSourceRecord(
+    InboundSourceSchema,
+    {
+      shipmentId: str(row, 'shipment_id'),
+      revisionId: str(row, 'revision_id'),
+      orderId: str(row, 'order_id'),
+      supplierName: str(row, 'supplier_name'),
+      sku: str(row, 'sku'),
+      originallyExpectedQuantity: int(row, 'originally_expected_quantity'),
+      originalPromisedArrivalIso: str(row, 'original_promised_arrival_iso'),
+      status: str(row, 'status'),
+      isDemo: true
+    },
+    'Zetaris inbound shipment'
+  );
+}
+
+function inventoryFromRow(row: Row): SyntheticWarehouseRecord {
+  return parseSourceRecord(
+    InventorySourceSchema,
+    {
+      warehouseId: str(row, 'warehouse_id'),
+      revisionId: str(row, 'revision_id'),
+      sku: str(row, 'sku'),
+      physicallyPresent: int(row, 'physically_present'),
+      damaged: int(row, 'damaged'),
+      activeAllocations: int(row, 'active_allocations'),
+      lastAuditedIso: str(row, 'last_audited_iso'),
+      isDemo: true
+    },
+    'Zetaris inventory'
+  );
+}
+
+function supplierMessageFromRow(row: Row): SyntheticSupplierUpdateRecord {
+  return parseSourceRecord(
+    SupplierSourceSchema,
+    {
+      messageId: str(row, 'messageId'),
+      revisionId: str(row, 'revisionId'),
+      orderId: str(row, 'orderId'),
+      supplierName: str(row, 'supplierName'),
+      rawMessageText: str(row, 'rawMessageText'),
+      receivedAtIso: str(row, 'receivedAtIso'),
+      isDemo: true
+    },
+    'Zetaris supplier message'
+  );
+}
+
+function backupListingFromRow(row: Row): SyntheticBackupListingRecord {
+  return parseSourceRecord(
+    BackupSourceSchema,
+    {
+      listingId: str(row, 'listingId'),
+      revisionId: str(row, 'revisionId'),
+      supplierName: str(row, 'supplierName'),
+      sku: str(row, 'sku'),
+      availableQuantity: int(row, 'availableQuantity'),
+      statedDeliveryArrivalIso: str(row, 'statedDeliveryArrivalIso'),
+      costKobo: int(row, 'costKobo'),
+      isConfirmedReservation: false,
+      listedAtIso: str(row, 'listedAtIso'),
+      isDemo: true
+    },
+    'Zetaris backup listing'
+  );
+}
+
 const T = {
   orders: `${ZETARIS_DATASOURCE}.orders`,
   inbound: `${ZETARIS_DATASOURCE}.inbound_shipments`,
@@ -74,6 +164,15 @@ export class ZetarisReader implements SourceReader {
 
   constructor(private readonly client: ZetarisClient) {}
 
+  async readOrders(signal?: AbortSignal): Promise<SyntheticOrderRecord[]> {
+    const rows = await this.client.query(
+      `SELECT * FROM ${T.orders} ORDER BY order_id ASC`,
+      1000,
+      signal
+    );
+    return rows.rows.map(orderFromRow);
+  }
+
   async readOrder(
     orderId: string,
     signal?: AbortSignal
@@ -82,50 +181,20 @@ export class ZetarisReader implements SourceReader {
       `SELECT * FROM ${T.orders} WHERE order_id = ${safeId(orderId, 'order id')}`,
       signal
     );
-    if (!row) return undefined;
-    return parseSourceRecord(
-      OrderSourceSchema,
-      {
-        orderId: str(row, 'order_id'),
-        revisionId: str(row, 'revision_id'),
-        customerName: str(row, 'customer_name'),
-        eventName: str(row, 'event_name'),
-        deliveryLocation: str(row, 'delivery_location'),
-        deliveryDeadlineIso: str(row, 'delivery_deadline_iso'),
-        sku: str(row, 'sku'),
-        itemDescription: str(row, 'item_description'),
-        requiredQuantity: int(row, 'required_quantity'),
-        operationalStatus: str(row, 'operational_status'),
-        isDemo: true
-      },
-      'Zetaris order'
-    );
+    return row ? orderFromRow(row) : undefined;
   }
 
   async readInbound(
     sku: string,
+    orderId?: string,
     signal?: AbortSignal
   ): Promise<SyntheticInboundShipmentRecord | undefined> {
+    const filter = orderId ? ` AND order_id = ${safeId(orderId, 'order id')}` : '';
     const row = await this.one(
-      `SELECT * FROM ${T.inbound} WHERE sku = ${safeId(sku, 'SKU')}`,
+      `SELECT * FROM ${T.inbound} WHERE sku = ${safeId(sku, 'SKU')}${filter}`,
       signal
     );
-    if (!row) return undefined;
-    return parseSourceRecord(
-      InboundSourceSchema,
-      {
-        shipmentId: str(row, 'shipment_id'),
-        revisionId: str(row, 'revision_id'),
-        orderId: str(row, 'order_id'),
-        supplierName: str(row, 'supplier_name'),
-        sku: str(row, 'sku'),
-        originallyExpectedQuantity: int(row, 'originally_expected_quantity'),
-        originalPromisedArrivalIso: str(row, 'original_promised_arrival_iso'),
-        status: str(row, 'status'),
-        isDemo: true
-      },
-      'Zetaris inbound shipment'
-    );
+    return row ? inboundFromRow(row) : undefined;
   }
 
   async readInventory(
@@ -136,21 +205,7 @@ export class ZetarisReader implements SourceReader {
       `SELECT * FROM ${T.inventory} WHERE sku = ${safeId(sku, 'SKU')}`,
       signal
     );
-    if (!row) return undefined;
-    return parseSourceRecord(
-      InventorySourceSchema,
-      {
-        warehouseId: str(row, 'warehouse_id'),
-        revisionId: str(row, 'revision_id'),
-        sku: str(row, 'sku'),
-        physicallyPresent: int(row, 'physically_present'),
-        damaged: int(row, 'damaged'),
-        activeAllocations: int(row, 'active_allocations'),
-        lastAuditedIso: str(row, 'last_audited_iso'),
-        isDemo: true
-      },
-      'Zetaris inventory'
-    );
+    return row ? inventoryFromRow(row) : undefined;
   }
 
   async readSupplierMessage(
@@ -161,47 +216,25 @@ export class ZetarisReader implements SourceReader {
       `SELECT * FROM ${T.supplier} WHERE orderId = ${safeId(orderId, 'order id')}`,
       signal
     );
-    if (!row) return undefined;
-    return parseSourceRecord(
-      SupplierSourceSchema,
-      {
-        messageId: str(row, 'messageId'),
-        revisionId: str(row, 'revisionId'),
-        orderId: str(row, 'orderId'),
-        supplierName: str(row, 'supplierName'),
-        rawMessageText: str(row, 'rawMessageText'),
-        receivedAtIso: str(row, 'receivedAtIso'),
-        isDemo: true
-      },
-      'Zetaris supplier message'
-    );
+    return row ? supplierMessageFromRow(row) : undefined;
   }
 
-  async readBackupListing(
+  async readBackupListings(
     sku: string,
     signal?: AbortSignal
-  ): Promise<SyntheticBackupListingRecord | undefined> {
-    const row = await this.one(
+  ): Promise<SyntheticBackupListingRecord[]> {
+    const { rows } = await this.client.query(
       `SELECT * FROM ${T.backup} WHERE sku = ${safeId(sku, 'SKU')}`,
+      1000,
       signal
     );
-    if (!row) return undefined;
-    return parseSourceRecord(
-      BackupSourceSchema,
-      {
-        listingId: str(row, 'listingId'),
-        revisionId: str(row, 'revisionId'),
-        supplierName: str(row, 'supplierName'),
-        sku: str(row, 'sku'),
-        availableQuantity: int(row, 'availableQuantity'),
-        statedDeliveryArrivalIso: str(row, 'statedDeliveryArrivalIso'),
-        costKobo: int(row, 'costKobo'),
-        isConfirmedReservation: false,
-        listedAtIso: str(row, 'listedAtIso'),
-        isDemo: true
-      },
-      'Zetaris backup listing'
-    );
+    return rows.map(backupListingFromRow).sort((a, b) => {
+      const byArrival =
+        Date.parse(a.statedDeliveryArrivalIso) - Date.parse(b.statedDeliveryArrivalIso);
+      return Number.isNaN(byArrival) || byArrival === 0
+        ? a.listingId.localeCompare(b.listingId)
+        : byArrival;
+    });
   }
 
   /** A lookup must match at most one record; more is ambiguous evidence. */

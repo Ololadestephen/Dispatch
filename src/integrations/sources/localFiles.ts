@@ -1,4 +1,4 @@
-import { encodeWarehouseCsv } from './warehouseCsv';
+import { encodeWarehouseCsv, parseWarehouseCsv } from './warehouseCsv';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -74,51 +74,65 @@ export class LocalFileStore implements SourceReader, SourceWriter {
           supplier_name TEXT NOT NULL, sku TEXT NOT NULL, originally_expected_quantity INTEGER NOT NULL,
           original_promised_arrival_iso TEXT NOT NULL, status TEXT NOT NULL, is_demo INTEGER NOT NULL
         );
-        DELETE FROM orders;
-        DELETE FROM inbound_shipments;
       `);
-      const o = seed.order;
-      db.prepare('INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)').run(
-        o.orderId,
-        o.revisionId,
-        o.customerName,
-        o.eventName,
-        o.deliveryLocation,
-        o.deliveryDeadlineIso,
-        o.sku,
-        o.itemDescription,
-        o.requiredQuantity,
-        o.operationalStatus
-      );
-      if (seed.inboundShipment) {
-        const i = seed.inboundShipment;
-        db.prepare('INSERT INTO inbound_shipments VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)').run(
-          i.shipmentId,
-          i.revisionId,
-          i.orderId,
-          i.supplierName,
-          i.sku,
-          i.originallyExpectedQuantity,
-          i.originalPromisedArrivalIso,
-          i.status
+      db.exec('BEGIN');
+      try {
+        db.exec('DELETE FROM orders; DELETE FROM inbound_shipments;');
+        const insertOrder = db.prepare(
+          'INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)'
         );
+        for (const o of seed.orders) {
+          insertOrder.run(
+            o.orderId,
+            o.revisionId,
+            o.customerName,
+            o.eventName,
+            o.deliveryLocation,
+            o.deliveryDeadlineIso,
+            o.sku,
+            o.itemDescription,
+            o.requiredQuantity,
+            o.operationalStatus
+          );
+        }
+        const insertInbound = db.prepare(
+          'INSERT INTO inbound_shipments VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)'
+        );
+        for (const i of seed.inboundShipments) {
+          insertInbound.run(
+            i.shipmentId,
+            i.revisionId,
+            i.orderId,
+            i.supplierName,
+            i.sku,
+            i.originallyExpectedQuantity,
+            i.originalPromisedArrivalIso,
+            i.status
+          );
+        }
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
       }
     } finally {
       db.close();
     }
-    await this.writeWarehouse(seed.warehouse);
-    await this.writeSupplierMessage(seed.supplierMessage);
-    fs.writeFileSync(
-      this.backupPath,
-      JSON.stringify(seed.backupListing ? [seed.backupListing] : []),
-      'utf8'
-    );
+    fs.writeFileSync(this.inventoryPath, encodeWarehouseCsv(seed.warehouses), 'utf8');
+    fs.writeFileSync(this.supplierPath, JSON.stringify(seed.supplierMessages), 'utf8');
+    fs.writeFileSync(this.backupPath, JSON.stringify(seed.backupListings), 'utf8');
   }
 
+  /** Replaces one SKU's warehouse row and leaves every other SKU untouched. */
   async writeWarehouse(w: SyntheticWarehouseRecord): Promise<void> {
-    fs.writeFileSync(this.inventoryPath, encodeWarehouseCsv(w), 'utf8');
+    const current = this.readInventoryRecords();
+    const next = current.some((row) => row.sku === w.sku)
+      ? current.map((row) => (row.sku === w.sku ? w : row))
+      : [...current, w];
+    fs.writeFileSync(this.inventoryPath, encodeWarehouseCsv(next), 'utf8');
   }
 
+  /** Replaces one order's message and leaves every other order's message untouched. */
   async writeSupplierMessage(m: SyntheticSupplierUpdateRecord): Promise<void> {
     const record: SyntheticSupplierUpdateRecord = {
       messageId: m.messageId,
@@ -129,11 +143,37 @@ export class LocalFileStore implements SourceReader, SourceWriter {
       receivedAtIso: m.receivedAtIso,
       isDemo: true
     };
-    fs.writeFileSync(this.supplierPath, JSON.stringify([record]), 'utf8');
+    const current = this.readSupplierRecords();
+    const next = current.some((row) => row.orderId === record.orderId)
+      ? current.map((row) => (row.orderId === record.orderId ? record : row))
+      : [...current, record];
+    fs.writeFileSync(this.supplierPath, JSON.stringify(next), 'utf8');
+  }
+
+  async readOrders(): Promise<SyntheticOrderRecord[]> {
+    return this.sqliteRows('SELECT * FROM orders ORDER BY order_id ASC').map((row) =>
+      parseSourceRecord(
+        OrderSourceSchema,
+        {
+          orderId: row.order_id,
+          revisionId: row.revision_id,
+          customerName: row.customer_name,
+          eventName: row.event_name,
+          deliveryLocation: row.delivery_location,
+          deliveryDeadlineIso: row.delivery_deadline_iso,
+          sku: row.sku,
+          itemDescription: row.item_description,
+          requiredQuantity: row.required_quantity,
+          operationalStatus: row.operational_status,
+          isDemo: true
+        },
+        'Local order'
+      )
+    );
   }
 
   async readOrder(orderId: string): Promise<SyntheticOrderRecord | undefined> {
-    const row = this.sqliteRow('SELECT * FROM orders WHERE order_id = ?', orderId);
+    const row = this.sqliteRows('SELECT * FROM orders WHERE order_id = ?', [orderId])[0];
     if (!row) return undefined;
     return parseSourceRecord(
       OrderSourceSchema,
@@ -154,8 +194,19 @@ export class LocalFileStore implements SourceReader, SourceWriter {
     );
   }
 
-  async readInbound(sku: string): Promise<SyntheticInboundShipmentRecord | undefined> {
-    const row = this.sqliteRow('SELECT * FROM inbound_shipments WHERE sku = ?', sku);
+  async readInbound(
+    sku: string,
+    orderId?: string
+  ): Promise<SyntheticInboundShipmentRecord | undefined> {
+    const row = orderId
+      ? this.sqliteRows(
+          'SELECT * FROM inbound_shipments WHERE sku = ? AND order_id = ? ORDER BY shipment_id ASC',
+          [sku, orderId]
+        )[0]
+      : this.sqliteRows(
+          'SELECT * FROM inbound_shipments WHERE sku = ? ORDER BY order_id ASC, shipment_id ASC',
+          [sku]
+        )[0];
     if (!row) return undefined;
     return parseSourceRecord(
       InboundSourceSchema,
@@ -175,27 +226,50 @@ export class LocalFileStore implements SourceReader, SourceWriter {
   }
 
   async readInventory(sku: string): Promise<SyntheticWarehouseRecord | undefined> {
-    const lines = this.readFile(this.inventoryPath, 'Warehouse CSV').trim().split('\n').slice(1);
-    const cols = lines.map((l) => l.split(',')).find((c) => c[2] === sku);
-    if (!cols) return undefined;
-    return parseSourceRecord(
-      InventorySourceSchema,
-      {
-        warehouseId: cols[0]!,
-        revisionId: cols[1]!,
-        sku: cols[2]!,
-        physicallyPresent: sourceInteger(cols[3], 'Warehouse present count'),
-        damaged: sourceInteger(cols[4], 'Warehouse damaged count'),
-        activeAllocations: sourceInteger(cols[5], 'Warehouse allocation count'),
-        lastAuditedIso: cols[6]!,
-        isDemo: true
-      },
-      'Local inventory'
-    );
+    const record = this.readInventoryRecords().find((row) => row.sku === sku);
+    if (!record) return undefined;
+    return parseSourceRecord(InventorySourceSchema, record, 'Local inventory');
   }
 
   async readSupplierMessage(orderId: string): Promise<SyntheticSupplierUpdateRecord | undefined> {
-    const all = parseSourceRecord(
+    return this.readSupplierRecords().find((m) => m.orderId === orderId);
+  }
+
+  async readBackupListings(sku: string): Promise<SyntheticBackupListingRecord[]> {
+    const all = this.readBackupRecords();
+    return all
+      .filter((b) => b.sku === sku)
+      .sort((a, b) => {
+        const byArrival =
+          Date.parse(a.statedDeliveryArrivalIso) - Date.parse(b.statedDeliveryArrivalIso);
+        return Number.isNaN(byArrival) || byArrival === 0
+          ? a.listingId.localeCompare(b.listingId)
+          : byArrival;
+      });
+  }
+
+  private readInventoryRecords(): SyntheticWarehouseRecord[] {
+    const raw = this.readFile(this.inventoryPath, 'Warehouse CSV');
+    return parseWarehouseCsv(raw).map((row) =>
+      parseSourceRecord(
+        InventorySourceSchema,
+        {
+          warehouseId: row.warehouse_id,
+          revisionId: row.revision_id,
+          sku: row.sku,
+          physicallyPresent: sourceInteger(row.physically_present, 'Warehouse present count'),
+          damaged: sourceInteger(row.damaged, 'Warehouse damaged count'),
+          activeAllocations: sourceInteger(row.active_allocations, 'Warehouse allocation count'),
+          lastAuditedIso: row.last_audited_iso,
+          isDemo: true
+        },
+        'Local inventory'
+      )
+    );
+  }
+
+  private readSupplierRecords(): SyntheticSupplierUpdateRecord[] {
+    return parseSourceRecord(
       z.array(SupplierSourceSchema),
       parseJsonOrThrow(
         this.readFile(this.supplierPath, 'Supplier message store'),
@@ -204,11 +278,10 @@ export class LocalFileStore implements SourceReader, SourceWriter {
       ),
       'Supplier message store'
     );
-    return all.find((m) => m.orderId === orderId);
   }
 
-  async readBackupListing(sku: string): Promise<SyntheticBackupListingRecord | undefined> {
-    const all = parseSourceRecord(
+  private readBackupRecords(): SyntheticBackupListingRecord[] {
+    return parseSourceRecord(
       z.array(BackupSourceSchema),
       parseJsonOrThrow(
         this.readFile(this.backupPath, 'Backup listing store'),
@@ -217,10 +290,9 @@ export class LocalFileStore implements SourceReader, SourceWriter {
       ),
       'Backup listing store'
     );
-    return all.find((b) => b.sku === sku);
   }
 
-  private sqliteRow(sql: string, param: string): Record<string, unknown> | undefined {
+  private sqliteRows(sql: string, params: Array<string | number> = []): Record<string, unknown>[] {
     if (!fs.existsSync(this.sqlitePath)) {
       throw new DomainError(
         `Orders database not found at ${this.sqlitePath}`,
@@ -230,7 +302,7 @@ export class LocalFileStore implements SourceReader, SourceWriter {
     let db: DatabaseSync | undefined;
     try {
       db = new DatabaseSync(this.sqlitePath);
-      return db.prepare(sql).get(param) as Record<string, unknown> | undefined;
+      return db.prepare(sql).all(...params) as Record<string, unknown>[];
     } catch {
       throw new DomainError('Orders database could not be read.', 'SOURCE_UNAVAILABLE');
     } finally {

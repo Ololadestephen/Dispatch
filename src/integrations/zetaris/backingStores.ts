@@ -1,4 +1,9 @@
-import { encodeWarehouseCsv } from '../sources/warehouseCsv';
+import {
+  encodeWarehouseCsv,
+  encodeWarehouseRecords,
+  parseWarehouseCsv,
+  toWarehouseCsvRecord
+} from '../sources/warehouseCsv';
 import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
@@ -8,12 +13,15 @@ import type {
   SyntheticWarehouseRecord
 } from '../../demo/seedData';
 import type { SourceSeed, SourceWriter } from '../sources/types';
+import { parseJsonOrThrow } from '../../domain/json';
+import { DomainError } from '../../domain/errors';
+import { SupplierSourceSchema, parseSourceRecord } from '../sources/schemas';
 import { ZetarisClient } from './client';
 
 /**
  * The two backing systems Zetaris federates for Dispatch:
  *  - PostgreSQL (orders, inbound shipments), registered with CREATE DATASOURCE.
- *  - CSV / JSON-lines files (warehouse stock, supplier messages, backup listings), registered as
+ *  - CSV / JSON-array files (warehouse stock, supplier messages, backup listings), registered as
  *    Lightning FILESTORE tables under the platform's local file root.
  * Dispatch writes to these systems directly (seed, reset, new source revisions) and reads only
  * through Zetaris.
@@ -81,22 +89,22 @@ export class BackingStores implements SourceWriter {
       await db.query('BEGIN');
       await db.query('DELETE FROM orders');
       await db.query('DELETE FROM inbound_shipments');
-      const o = seed.order;
-      await db.query('INSERT INTO orders VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)', [
-        o.orderId,
-        o.revisionId,
-        o.customerName,
-        o.eventName,
-        o.deliveryLocation,
-        o.deliveryDeadlineIso,
-        o.sku,
-        o.itemDescription,
-        o.requiredQuantity,
-        o.operationalStatus,
-        true
-      ]);
-      if (seed.inboundShipment) {
-        const i = seed.inboundShipment;
+      for (const o of seed.orders) {
+        await db.query('INSERT INTO orders VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)', [
+          o.orderId,
+          o.revisionId,
+          o.customerName,
+          o.eventName,
+          o.deliveryLocation,
+          o.deliveryDeadlineIso,
+          o.sku,
+          o.itemDescription,
+          o.requiredQuantity,
+          o.operationalStatus,
+          true
+        ]);
+      }
+      for (const i of seed.inboundShipments) {
         await db.query('INSERT INTO inbound_shipments VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)', [
           i.shipmentId,
           i.revisionId,
@@ -113,9 +121,9 @@ export class BackingStores implements SourceWriter {
     });
 
     fs.mkdirSync(this.config.filesDir, { recursive: true });
-    await this.writeWarehouse(seed.warehouse);
-    await this.writeSupplierMessage(seed.supplierMessage);
-    this.writeJsonLines(FILES.backupListings, seed.backupListing ? [seed.backupListing] : []);
+    this.writeAtomically(FILES.inventory, encodeWarehouseCsv(seed.warehouses));
+    this.writeJsonRecords(FILES.supplierMessages, seed.supplierMessages);
+    this.writeJsonRecords(FILES.backupListings, seed.backupListings);
   }
 
   /** Seeded when PostgreSQL holds the order table with rows and all three files exist. */
@@ -132,10 +140,19 @@ export class BackingStores implements SourceWriter {
     });
   }
 
+  /** Replaces one SKU's CSV row and leaves every other SKU untouched. */
   async writeWarehouse(w: SyntheticWarehouseRecord): Promise<void> {
-    this.writeAtomically(FILES.inventory, encodeWarehouseCsv(w));
+    const target = path.join(this.config.filesDir, FILES.inventory);
+    const existing = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '';
+    const rows = parseWarehouseCsv(existing);
+    const row = toWarehouseCsvRecord(w);
+    const next = rows.some((record) => record.sku === w.sku)
+      ? rows.map((record) => (record.sku === w.sku ? row : record))
+      : [...rows, row];
+    this.writeAtomically(FILES.inventory, encodeWarehouseRecords(next));
   }
 
+  /** Replaces one order's supplier message and leaves every other message untouched. */
   async writeSupplierMessage(m: SyntheticSupplierUpdateRecord): Promise<void> {
     const record: SyntheticSupplierUpdateRecord = {
       messageId: m.messageId,
@@ -146,7 +163,32 @@ export class BackingStores implements SourceWriter {
       receivedAtIso: m.receivedAtIso,
       isDemo: true
     };
-    this.writeJsonLines(FILES.supplierMessages, [record]);
+    const target = path.join(this.config.filesDir, FILES.supplierMessages);
+    const existing = fs.existsSync(target) ? fs.readFileSync(target, 'utf8').trim() : '';
+    // The live file reader consumes one JSON document. Accept the previous JSON-lines layout
+    // when revising an existing workspace, then persist all records in one array document.
+    const parsed: unknown = existing.startsWith('[')
+      ? parseJsonOrThrow(existing, FILES.supplierMessages, 'STORED_RECORD_CORRUPT')
+      : existing
+          .split('\n')
+          .filter((line) => line.trim() !== '')
+          .map((line, index) =>
+            parseJsonOrThrow(
+              line,
+              `Supplier message line ${index + 1} in ${FILES.supplierMessages}`,
+              'STORED_RECORD_CORRUPT'
+            )
+          );
+    if (!Array.isArray(parsed)) {
+      throw new DomainError('Stored supplier messages must be an array.', 'STORED_RECORD_CORRUPT');
+    }
+    const records = parsed.map((value) =>
+      parseSourceRecord(SupplierSourceSchema, value, 'Stored supplier message')
+    );
+    const next = records.some((row) => row.orderId === record.orderId)
+      ? records.map((row) => (row.orderId === record.orderId ? record : row))
+      : [...records, record];
+    this.writeJsonRecords(FILES.supplierMessages, next);
   }
 
   /** Registers both systems in Zetaris, replacing earlier registrations. */
@@ -176,15 +218,12 @@ export class BackingStores implements SourceWriter {
           `OPTIONS (path "${filesPathInZetaris}/${file}"${extra})`
       );
     await table('warehouse_inventory', 'CSV', FILES.inventory, ', header "true"');
-    await table('supplier_messages', 'JSON', FILES.supplierMessages);
-    await table('backup_listings', 'JSON', FILES.backupListings);
+    await table('supplier_messages', 'JSON', FILES.supplierMessages, ', multiLine "true"');
+    await table('backup_listings', 'JSON', FILES.backupListings, ', multiLine "true"');
   }
 
-  private writeJsonLines(file: string, records: unknown[]): void {
-    this.writeAtomically(
-      file,
-      records.map((r) => JSON.stringify(r)).join('\n') + (records.length ? '\n' : '')
-    );
+  private writeJsonRecords(file: string, records: unknown[]): void {
+    this.writeAtomically(file, `${JSON.stringify(records)}\n`);
   }
 
   /** Write-then-rename so Zetaris never reads a half-written file. */

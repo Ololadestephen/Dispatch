@@ -4,9 +4,10 @@ import { Mono, Pill } from './primitives';
 
 /** Which data layer, router and model produced what is on screen. Every claim comes from state. */
 export function IntegrationStrip({ state }: { state: DeskState }) {
-  const { integrations, sources, receipt } = state;
+  const { integrations, sources, receipt, worldModel } = state;
   const zetaris = integrations.sources === 'zetaris';
   const scout = receipt?.scout;
+  const pendingMatches = worldModel.pendingMatches.length;
   const tables = [
     ...new Set(
       [sources.orders, sources.inventory].map((e) => sourceTable(e.sourceId).split('.')[0])
@@ -84,6 +85,34 @@ export function IntegrationStrip({ state }: { state: DeskState }) {
             : 'Spec implementation, rules only'}
         </span>
         {scout && <Mono>{scout.contractId}</Mono>}
+      </article>
+
+      <article className="integration">
+        <div className="integration-head">
+          <span className="eyebrow">Identity</span>
+          {pendingMatches > 0 ? (
+            <Pill tone="pending" dot>
+              {pendingMatches} to review
+            </Pill>
+          ) : worldModel.context ? (
+            <Pill tone="ok" dot>
+              Context built
+            </Pill>
+          ) : (
+            <Pill dot>Not built yet</Pill>
+          )}
+        </div>
+        <span className="integration-name">Meterless World Model</span>
+        <span className="integration-meta">Reference implementation · event-sourced mirror</span>
+        <Mono>
+          {worldModel.eventCount} events · {worldModel.headEventId}
+        </Mono>
+        {worldModel.context && (
+          <span className="integration-meta">
+            {worldModel.context.neighbours.length} linked · {worldModel.context.suppliers.length}{' '}
+            supplier identities
+          </span>
+        )}
       </article>
 
       <article className="integration">

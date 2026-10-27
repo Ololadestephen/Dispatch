@@ -103,9 +103,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </header>
 
-        {state ? (
+        {state || desk.orderNotFound ? (
           <main className="page" aria-busy={busy}>
-            {desk.loadError && (
+            {desk.loadError && !desk.orderNotFound && (
               <div className="row" role="alert">
                 <span className="pill pill-risk">{desk.loadError}</span>
                 <button className="btn" disabled={busy} onClick={() => void desk.refresh()}>
